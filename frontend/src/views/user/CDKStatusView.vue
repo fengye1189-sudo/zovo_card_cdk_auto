@@ -125,7 +125,11 @@
         </div>
 
         <div
-          v-if="result.used"
+          v-if="result.status === 'failed'"
+          class="alert alert-error mt-6"
+        >{{ result.message || t('cdkLookup.msgFailed') }}</div>
+        <div
+          v-else-if="result.used"
           class="alert alert-success mt-6"
         >{{ result.message || t('cdkLookup.msgUsed') }}</div>
         <div
@@ -142,7 +146,19 @@
           class="alert alert-info mt-6"
         >{{ result.message || t('cdkLookup.msgUnused') }}</div>
 
-        <button @click="reset" class="btn-secondary w-full mt-6">{{ t('cdkLookup.queryOther') }}</button>
+        <div class="flex flex-col sm:flex-row gap-3 mt-6">
+          <button
+            v-if="result.can_resubmit"
+            class="btn-primary flex-1"
+            @click="goRedeem(result.cdk_code)"
+          >{{ t('cdkLookup.resubmit') }}</button>
+          <button
+            v-else-if="result.status === 'unused'"
+            class="btn-primary flex-1"
+            @click="goRedeem(result.cdk_code)"
+          >{{ t('cdkLookup.goRedeem') }}</button>
+          <button @click="reset" class="btn-secondary flex-1">{{ t('cdkLookup.queryOther') }}</button>
+        </div>
       </div>
 
       <div v-if="mode === 'batch' && batchResults.length" class="mt-8 card animate-slideInUp space-y-4">
@@ -157,9 +173,12 @@
             </button>
           </div>
         </div>
-        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-sm">
+        <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-sm">
           <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--good, #16a34a) 12%, transparent)">
             {{ t('cdkLookup.summaryUsed', { n: batchSummary.used }) }}
+          </div>
+          <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--err, #dc2626) 12%, transparent)">
+            {{ t('cdkLookup.summaryFailed', { n: batchSummary.failed }) }}
           </div>
           <div class="rounded-lg bg-soft py-2">
             {{ t('cdkLookup.summaryUnused', { n: batchSummary.unused }) }}
@@ -181,6 +200,7 @@
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.rechargeEmail') }}</th>
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.plan') }}</th>
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.usedAt') }}</th>
+                <th class="px-3 py-2 font-medium"></th>
               </tr>
             </thead>
             <tbody>
@@ -193,6 +213,20 @@
                 <td class="px-3 py-2 font-mono break-all">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2">{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2 text-muted whitespace-nowrap">{{ row.used_at || t('cdkLookup.emailEmpty') }}</td>
+                <td class="px-3 py-2 text-right whitespace-nowrap">
+                  <button
+                    v-if="row.can_resubmit"
+                    type="button"
+                    class="btn-primary !py-1 !px-3 text-xs"
+                    @click="goRedeem(row.cdk_code)"
+                  >{{ t('cdkLookup.resubmit') }}</button>
+                  <button
+                    v-else-if="row.status === 'unused'"
+                    type="button"
+                    class="btn-secondary !py-1 !px-3 text-xs"
+                    @click="goRedeem(row.cdk_code)"
+                  >{{ t('cdkLookup.goRedeem') }}</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -205,6 +239,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 import LanguageToggle from '../../components/LanguageToggle.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
@@ -213,6 +248,7 @@ import { copyToClipboard } from '../../lib/clipboard'
 import { toast } from '../../lib/ui'
 
 const { t } = useI18n({ useScope: 'global' })
+const router = useRouter()
 
 const LOOKUP_BATCH_MAX = 100
 
@@ -220,9 +256,11 @@ interface CDKStatusResult {
   cdk_code: string
   status: string
   used: boolean
+  can_resubmit?: boolean
   account_email?: string
   plan?: string
   used_at?: string
+  notes?: string
   message?: string
 }
 
@@ -237,9 +275,10 @@ const batchResults = ref<CDKStatusResult[]>([])
 const parsedCodes = computed(() => parseCdks(batchText.value))
 
 const batchSummary = computed(() => {
-  const s = { used: 0, unused: 0, processing: 0, unknown: 0 }
+  const s = { used: 0, failed: 0, unused: 0, processing: 0, unknown: 0 }
   for (const row of batchResults.value) {
     if (row.status === 'used') s.used++
+    else if (row.status === 'failed') s.failed++
     else if (row.status === 'unused') s.unused++
     else if (row.status === 'processing') s.processing++
     else s.unknown++
@@ -255,10 +294,15 @@ function statusText(status: string) {
 
 function statusColor(status: string) {
   if (status === 'used') return 'var(--good, #16a34a)'
+  if (status === 'failed') return 'var(--err, #dc2626)'
   if (status === 'unused') return 'var(--ink)'
   if (status === 'processing') return 'var(--primary)'
   if (status === 'disabled' || status === 'expired' || status === 'unknown') return 'var(--warn, #d97706)'
   return 'var(--ink)'
+}
+
+function goRedeem(code: string) {
+  router.push({ path: '/recharge', query: { cdk: code } })
 }
 
 async function query() {
@@ -327,12 +371,13 @@ async function copyUsedEmails() {
 }
 
 function exportCsv() {
-  const header = ['cdk_code', 'status', 'account_email', 'plan', 'used_at', 'message']
+  const header = ['cdk_code', 'status', 'can_resubmit', 'account_email', 'plan', 'used_at', 'message']
   const lines = [header.join(',')]
   for (const row of batchResults.value) {
     const cells = [
       row.cdk_code,
       row.status,
+      row.can_resubmit ? '1' : '0',
       row.account_email || '',
       row.plan || '',
       row.used_at || '',

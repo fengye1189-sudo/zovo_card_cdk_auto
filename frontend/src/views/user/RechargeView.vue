@@ -221,11 +221,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import LanguageToggle from '../../components/LanguageToggle.vue'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 
 const { t } = useI18n({ useScope: 'global' })
+const route = useRoute()
 const steps = ['预览', '凭证', '兑换', '结果']
 const step = ref(1)
 const busy = ref(false)
@@ -889,10 +891,16 @@ onMounted(() => {
   nowTimer = setInterval(() => {
     nowTick.value = Date.now()
   }, 30000)
+  const q = String(route.query.cdk || route.query.code || '').trim()
   if (loadProgress()) {
-    if (step.value === 4 && (redemptionToken.value || code.value)) {
+    if (q && code.value.trim() !== q) {
+      resetAll()
+      code.value = q
+    } else if (step.value === 4 && (redemptionToken.value || code.value)) {
       startPoll()
     }
+  } else if (q) {
+    code.value = q
   }
 })
 

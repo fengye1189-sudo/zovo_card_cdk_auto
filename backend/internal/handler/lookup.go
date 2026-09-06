@@ -23,11 +23,13 @@ const lookupBatchWorkers = 4
 
 type cdkLookupResult struct {
 	CDKCode      string  `json:"cdk_code"`
-	Status       string  `json:"status"` // unused | used | disabled | expired | processing | unknown
+	Status       string  `json:"status"` // unused | used | failed | disabled | expired | processing | unknown
 	Used         bool    `json:"used"`
+	CanResubmit  bool    `json:"can_resubmit"`
 	AccountEmail string  `json:"account_email,omitempty"`
 	Plan         string  `json:"plan,omitempty"`
 	UsedAt       *string `json:"used_at,omitempty"`
+	Notes        string  `json:"notes,omitempty"`
 	Message      string  `json:"message"`
 }
 
@@ -130,8 +132,28 @@ func normalizeLookupCodes(raw []string) []string {
 	return out
 }
 
+func applyLookupFailure(resp *cdkLookupResult, notes string, reusable bool) {
+	resp.Status = "failed"
+	resp.Used = false
+	resp.CanResubmit = reusable
+	note := strings.TrimSpace(notes)
+	if note != "" {
+		resp.Notes = note
+	}
+	if reusable {
+		resp.Message = "使用失败，卡密已重新激活，可以重新提交"
+	} else {
+		resp.Message = "使用失败，卡密尚未重新激活，请等待处理后再查"
+	}
+	if note != "" {
+		resp.Message = resp.Message + "：" + note
+	}
+}
+
 func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 	resp := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
+	redeemOK := false
+	reusable := false
 
 	var planType, keyStatus string
 	var usedAt, expiresAt sql.NullTime
@@ -144,7 +166,8 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 		switch strings.ToLower(keyStatus) {
 		case "used":
 			resp.Status, resp.Used = "used", true
-			resp.Message = "卡密已使用"
+			resp.Message = "卡密使用成功"
+			reusable = false
 		case "disabled":
 			resp.Status, resp.Used = "disabled", false
 			resp.Message = "卡密已禁用"
@@ -154,12 +177,14 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 		case "active", "":
 			resp.Status, resp.Used = "unused", false
 			resp.Message = "卡密未使用"
+			reusable = true
 		default:
 			resp.Status = strings.ToLower(keyStatus)
 			resp.Message = "卡密状态：" + keyStatus
 		}
 		if expiresAt.Valid && expiresAt.Time.Before(time.Now()) && resp.Status == "unused" {
 			resp.Status, resp.Message = "expired", "卡密已过期"
+			reusable = false
 		}
 		if usedAt.Valid {
 			s := usedAt.Time.Format("2006-01-02 15:04:05")
@@ -186,29 +211,34 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 		switch st {
 		case "used", "redeemed", "consumed":
 			resp.Status, resp.Used = "used", true
-			resp.Message = "卡密已使用"
+			resp.Message = "卡密使用成功"
+			reusable = false
 		case "disabled":
 			if resp.Status != "used" {
 				resp.Status, resp.Used = "disabled", false
 				resp.Message = "卡密已禁用"
 			}
+			reusable = false
 		case "unused", "active":
 			if resp.Status == "unknown" {
 				resp.Status, resp.Used = "unused", false
 				resp.Message = "卡密未使用"
 			}
+			if resp.Status == "unused" {
+				reusable = true
+			}
 		}
 	}
 
 	var taskStatus string
-	var accountEmail sql.NullString
+	var accountEmail, taskNotes sql.NullString
 	var taskCompleted sql.NullTime
 	err = db.DB.QueryRow(`
-		SELECT COALESCE(task_status,''), account_email, completed_at
+		SELECT COALESCE(task_status,''), account_email, completed_at, COALESCE(notes,'')
 		FROM recharge_tasks
 		WHERE upper(trim(cdk_code)) = upper(trim(?))
 		ORDER BY created_at DESC LIMIT 1
-	`, code).Scan(&taskStatus, &accountEmail, &taskCompleted)
+	`, code).Scan(&taskStatus, &accountEmail, &taskCompleted, &taskNotes)
 	if err == nil {
 		if accountEmail.Valid && strings.TrimSpace(accountEmail.String) != "" {
 			resp.AccountEmail = strings.TrimSpace(accountEmail.String)
@@ -216,20 +246,26 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 		ts := strings.ToLower(taskStatus)
 		switch ts {
 		case "completed", "success", "done":
+			redeemOK = true
 			resp.Status, resp.Used = "used", true
-			resp.Message = "卡密已使用"
+			resp.Message = "卡密使用成功"
+			reusable = false
 			if taskCompleted.Valid {
 				s := taskCompleted.Time.Format("2006-01-02 15:04:05")
 				resp.UsedAt = &s
 			}
 		case "pending", "submitted", "running", "queued", "processing":
-			if resp.Status != "used" {
+			if !redeemOK && resp.Status != "used" {
 				resp.Status, resp.Used = "processing", false
 				resp.Message = "卡密兑换处理中"
 			}
 		case "failed", "declined", "cancelled":
-			if resp.Status == "unknown" || resp.Status == "unused" {
-				resp.Message = "存在失败记录，卡密可能仍可用或已核销，请以实际兑换结果为准"
+			if !redeemOK {
+				note := ""
+				if taskNotes.Valid {
+					note = taskNotes.String
+				}
+				applyLookupFailure(&resp, note, reusable)
 			}
 		}
 	}
@@ -264,14 +300,16 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 					os := strings.ToLower(orderStatus)
 					switch {
 					case os == "completed" || os == "success" || os == "done" || os == "paid":
+						redeemOK = true
 						resp.Status, resp.Used = "used", true
-						resp.Message = "卡密已使用"
+						resp.CanResubmit = false
+						resp.Message = "卡密使用成功"
 					case os == "failed" || os == "declined" || os == "cancelled":
-						if resp.Status != "used" {
-							resp.Message = "兑换曾失败，请确认卡密是否仍可用"
+						if !redeemOK {
+							applyLookupFailure(&resp, "", reusable)
 						}
 					case os != "":
-						if resp.Status != "used" {
+						if !redeemOK && resp.Status != "used" && resp.Status != "failed" {
 							resp.Status, resp.Used = "processing", false
 							resp.Message = "卡密兑换处理中"
 						}
@@ -281,14 +319,15 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 		}
 	}
 
-	if resp.AccountEmail != "" && resp.Status == "unused" {
+	if resp.AccountEmail != "" && resp.Status == "unused" && !resp.CanResubmit {
 		resp.Status, resp.Used = "used", true
-		resp.Message = "卡密已使用"
+		resp.Message = "卡密使用成功"
 	}
 	if resp.Status == "used" {
 		resp.Used = true
+		resp.CanResubmit = false
 		if resp.Message == "" || resp.Message == "未找到该卡密记录" {
-			resp.Message = "卡密已使用"
+			resp.Message = "卡密使用成功"
 		}
 	}
 	if resp.Status == "unknown" {
