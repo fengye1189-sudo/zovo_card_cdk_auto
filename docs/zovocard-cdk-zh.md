@@ -120,7 +120,9 @@ CDK(激活码/卡密)让你把 GPT 直充做成「一次性兑换码」生意:�
 
 ### 4.2 列码 `GET /openapi/v1/gpt-direct/cdks?page=1&page_size=20`
 
-返回你名下 CDK 列表(只含码前缀与状态,不含完整码)。
+返回当前 Key 可见的 CDK：本 Key 签发的码，以及你在**官网/后台购买、尚未绑定任何 App** 的码。同一账户下其他 Key 签发的码不会出现。所有者列表带完整 `code`（库中有明文的行）。
+
+官网买码后再创建 App 时，调本接口即可同步，无需新接口。
 
 可选查询参数:
 
@@ -175,7 +177,7 @@ GET /openapi/v1/gpt-direct/cdk-orders?page=1&page_size=20
 GET /openapi/v1/gpt-direct/cdk-orders/{order_id}
 ```
 
-列表可按 `updated_after`(RFC3339)、`status`、`cdk_id`、`order_id` 筛选。返回 CDK 前缀/状态、脱敏账号与卡号、订单阶段、实付/报价、服务费和资金状态、时间字段;详情另含公开 `events`。当前 Key 不能读取同一用户其他 Key 签发的 CDK 订单。
+列表可按 `updated_after`(RFC3339)、`status`、`cdk_id`、`order_id` 筛选。返回 CDK 前缀/状态、脱敏账号与卡号、订单阶段、实付/报价、服务费和资金状态、时间字段;详情另含公开 `events`。可见范围与列码相同：本 Key 签发的码，以及官网购入未绑定 App 的码。不能读取同一用户其他 Key 签发的 CDK 订单。官网购入码的兑换 Webhook 不会推到新 Key，请用本接口对账。
 
 ---
 
