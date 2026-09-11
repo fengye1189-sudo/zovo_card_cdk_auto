@@ -225,6 +225,7 @@ import { useRoute } from 'vue-router'
 import LanguageToggle from '../../components/LanguageToggle.vue'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
+import { planLabel, planSatisfied as isSatisfied } from '../../lib/plan'
 
 const { t } = useI18n({ useScope: 'global' })
 const route = useRoute()
@@ -458,36 +459,11 @@ const alreadySatisfiedHint = computed(() => {
   return `账号已有 ${plan} 或更高套餐，本次不能重复购买。`
 })
 
-function planLabel(value: string) {
-  const n = String(value || 'free').toLowerCase()
-  if (n.includes('prolite') || n.includes('5x') || n === 'pro_5x') return 'Pro 5x'
-  if (n.includes('20x') || n === 'pro_20x' || n === 'pro' || n === 'chatgptpro' || n.includes('pro')) return 'Pro 20x'
-  if (n.includes('plus')) return 'Plus'
-  if (n.includes('team')) return 'Team'
-  if (!n || n === 'free') return '免费版'
-  return value
-}
-
+// 档位判定（可读名 / 是否已满足）抽到 lib/plan.ts：那是纯函数、有单测钉着，
+// 且「绑卡档不能被判成已满足」这条与卡台后端同源。planLabel 直接复用导入的实现；
+// planSatisfied 在这里只做一层薄封装，把「当前码的 plan_flow」喂给纯函数。
 function planSatisfied(currentPlan: string, requestedPlan: string) {
-  const current = String(currentPlan || '').toLowerCase()
-  const req = String(requestedPlan || '').toLowerCase()
-  const currentRank =
-    current.includes('prolite') || current.includes('5x') || current === 'pro_5x'
-      ? 2
-      : current.includes('pro')
-        ? 3
-        : current.includes('plus')
-          ? 1
-          : 0
-  const requestedRank =
-    req === 'pro_20x' || req === 'pro' || req.includes('20x')
-      ? 3
-      : req === 'pro_5x' || req.includes('5x')
-        ? 2
-        : req === 'plus' || req.includes('plus')
-          ? 1
-          : 99
-  return currentRank >= requestedRank
+  return isSatisfied(currentPlan, requestedPlan, previewInfo.value?.plan_flow)
 }
 
 function remainingTime(value: string, timestamp = Date.now()) {
