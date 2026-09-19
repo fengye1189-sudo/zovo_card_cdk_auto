@@ -78,6 +78,9 @@ func CardPlatformPlans(c *gin.Context) {
 		"base":    cardplatform.LoadConfig().SiteBase,
 		// 展示顺序/文案/性质仍以卡台注册表为准，前端不维护档位清单
 		"registry": sellable,
+		// 付款地区同理：卡台下发什么就能选什么，本站不写死。
+		// 老版本卡台没有这个字段 → 空数组 → 界面只剩「默认(PH)」，即本功能上线前的行为。
+		"payment_regions": plans.PaymentRegions,
 	})
 }
 
@@ -99,6 +102,11 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 		Plan             string `json:"plan"`
 		Count            int    `json:"count"`
 		FundingConfirmed bool   `json:"funding_confirmed"`
+		// PaymentCountry 这批码兑换时用哪个地区付款。空 = 菲律宾（存量行为）。
+		// 不在本站校验取值：卡台的 payment_regions 是唯一真相源，
+		// 这里再校验一遍就等于多了一份会过期的清单。发了不支持的地区，
+		// 卡台会在发码这一步直接拒，错误原样透回给操作者。
+		PaymentCountry string `json:"payment_country"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -158,7 +166,14 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	}
 	// 本站选卡配置 → 发码偏好（跳过未启动卡头；ch1 等历史写法会归一成 one）
 	var issuePrefs []cardplatform.IssueCardPref
-	if pref, ok := issuePrefFromSite(); ok {
+	pref, hasSitePref := issuePrefFromSite()
+	payCountry := strings.ToUpper(strings.TrimSpace(req.PaymentCountry))
+	// ★没有本站选卡配置时也要把地区带上★：地区和选卡偏好是两件独立的事，
+	// 用同一个 pref 结构只是顺路。写成「有选卡配置才传 pref」会让
+	// 「没配选卡、但指定了智利」这种组合静默退回菲律宾——码发出去了，
+	// 区却不对，而且一切正常无报错，直到用户兑换时按 PHP 扣了款才看得出来。
+	if hasSitePref || payCountry != "" {
+		pref.PaymentCountry = payCountry
 		issuePrefs = append(issuePrefs, pref)
 	}
 	var res *cardplatform.IssueCDKResult
@@ -191,6 +206,11 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	prefNote := ""
 	if len(issuePrefs) > 0 {
 		prefNote = " pref=" + issuePrefs[0].Issuer + "/" + issuePrefs[0].SegmentKey
+	}
+	// 地区进审计：这批码按哪个区发的，事后只能从这里查——
+	// 码本身在本站只存码文，地区留在卡台那边。
+	if payCountry != "" {
+		prefNote += " region=" + payCountry
 	}
 	db.WriteAudit(username, "cardplatform_issue_cdk", "plan="+plan+" count="+strconv.Itoa(req.Count)+prefNote, c.ClientIP())
 	// 规范化：保证前端总能拿到完整 code 字段；绝不把 code_prefix 填进 code

@@ -76,6 +76,12 @@
             <el-button size="small" @click="form.count = 100">100</el-button>
             <el-button size="small" @click="form.count = ISSUE_MAX">200</el-button>
           </el-button-group>
+          <span class="text-sm text-muted">付款地区</span>
+          <el-select v-model="form.payment_country" size="small" style="width: 150px">
+            <el-option label="默认(菲律宾)" value="" />
+            <el-option v-for="r in paymentRegions" :key="r.country"
+                       :label="`${regionLabel(r.country)} (${r.currency})`" :value="r.country" />
+          </el-select>
           <el-checkbox v-model="form.funding_confirmed">确认承担兑换资金</el-checkbox>
           <el-button type="primary" :loading="issuing" :disabled="!canIssue" @click="issue">
             {{ issuing ? '购买中…' : `购买 ${form.count} 张 ${planLabel(form.plan)} · $${estimatedTotal}` }}
@@ -89,7 +95,11 @@
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="text-sm font-medium" style="color: var(--good)">
               本批 {{ recentCodes.length }} 张
-              <span v-if="recentMeta" class="text-xs text-muted font-normal"> · {{ recentMeta.plan }} · {{ recentMeta.atLabel }}</span>
+              <span v-if="recentMeta" class="text-xs text-muted font-normal">
+                · {{ recentMeta.plan }}
+                · {{ recentMeta.region ? regionLabel(recentMeta.region) : '默认(菲律宾)' }}
+                · {{ recentMeta.atLabel }}
+              </span>
             </div>
             <div class="flex gap-1">
               <el-button size="small" type="success" @click="copyAll">复制</el-button>
@@ -343,12 +353,28 @@ const form = reactive({
   plan: 'plus',
   count: 1,
   funding_confirmed: false,
+  // 空 = 菲律宾（存量行为）。空和 'PH' 在这里是两件事，界面上也分开显示：
+  // 将来卡台若改默认地区，「没指定」和「明确指定了 PH」该走不同的路。
+  payment_country: '',
 })
+// ★地区清单只认卡台下发的 payment_regions★，本站不写死。
+// 写死的那份和卡台的校验表迟早不一致，而不一致时两边都不报错：
+// 多出来的地区发码被拒，少了的地区卡台支持了却选不到。
+const paymentRegions = ref<Array<{ country: string; currency: string }>>([])
+const REGION_NAMES: Record<string, string> = {
+  PH: '菲律宾', US: '美国', JP: '日本', CL: '智利', EG: '埃及', IN: '印度', KR: '韩国',
+}
+// 没收录的国家码原样显示——比显示空白好，新地区不必等这份表补齐就能用。
+function regionLabel(code: string): string {
+  return REGION_NAMES[code] || code
+}
 const issuing = ref(false)
 const issueError = ref('')
 const issueOk = ref('')
 const recentCodes = ref<string[]>([])
-const recentMeta = ref<{ plan: string; atLabel: string } | null>(null)
+// region 一并记下来：整批码是复制出去卖的，事后只能从这条横幅确认
+// 「刚买的这 200 张到底是哪个区的」——码文本身看不出地区。
+const recentMeta = ref<{ plan: string; atLabel: string; region: string } | null>(null)
 
 const rows = ref<any[]>([])
 const total = ref(0)
@@ -1049,8 +1075,8 @@ async function syncFromCardplatform(opts?: { quiet?: boolean; plan?: string; sta
   }
 }
 
-function persistRecent(codes: string[], plan: string) {
-  const payload = { codes, plan, at: Date.now() }
+function persistRecent(codes: string[], plan: string, region = '') {
+  const payload = { codes, plan, at: Date.now(), region }
   try {
     sessionStorage.setItem(RECENT_KEY, JSON.stringify(payload))
   } catch {
@@ -1059,6 +1085,7 @@ function persistRecent(codes: string[], plan: string) {
   recentMeta.value = {
     plan,
     atLabel: new Date(payload.at).toLocaleString(),
+    region,
   }
 }
 
@@ -1073,6 +1100,7 @@ function loadPersistedRecent() {
     recentMeta.value = {
       plan: String(o.plan || '—'),
       atLabel: o.at ? new Date(o.at).toLocaleString() : '—',
+      region: String(o.region || ''),
     }
   } catch {
     /* ignore */
@@ -1141,6 +1169,15 @@ async function loadMeta() {
       plans.value = d.plans || {}
       // 服务端已按「卡台注册表 ∩ ACC 定价开关」过滤，这里拿到什么就显示什么
       planRegistry.value = d.registry || []
+      paymentRegions.value = Array.isArray(d.payment_regions)
+        ? d.payment_regions.map((r: any) => ({ country: String(r.country || ''), currency: String(r.currency || '') }))
+            .filter((r: any) => r.country && r.currency)
+        : []
+      // 卡台不再下发某个地区时，把已选中的收回到「默认」——
+      // 否则表单会一直带着一个卡台已经不认的国家码，发码时才被拒。
+      if (form.payment_country && !paymentRegions.value.some(r => r.country === form.payment_country)) {
+        form.payment_country = ''
+      }
       pricingVersion.value = d.version ?? null
       priceSource.value = 'live'
     } else {
@@ -1175,6 +1212,9 @@ async function issue() {
         plan: form.plan,
         count: form.count,
         funding_confirmed: true,
+        // 只传国家，币种由卡台按它的唯一真相源补。本站猜币种猜错的话，
+        // 卡台会回「付款地区与币种不匹配」——一句完全指不到真因的话。
+        payment_country: form.payment_country || '',
       }),
     })
     const d = await r.json().catch(() => ({}))
@@ -1183,6 +1223,8 @@ async function issue() {
       const recCodes = Array.isArray(recovered?.codes) ? recovered.codes.map(extractFullCode).filter(Boolean) : []
       if (recCodes.length) {
         recentCodes.value = recCodes
+        // ★这里不传地区★：找回是按「plan + unused」从卡台捞最近的码，
+        // 捞到的不一定全是这一批，标上地区等于给出一个可能是错的承诺。
         persistRecent(recCodes, form.plan)
         issueOk.value = `发码请求未完成，已从卡台找回 ${recCodes.length} 张完整码。不要再点购买。`
         dialog.toast(issueOk.value, 'warn')
@@ -1207,7 +1249,7 @@ async function issue() {
     // 浏览器兜底 + 列表以服务器为准
     rememberIssued(issued, form.plan)
     recentCodes.value = codes
-    persistRecent(codes, form.plan)
+    persistRecent(codes, form.plan, form.payment_country)
     issueOpen.value = true
     const shortOnes = codes.filter((c) => !isFullCode(c))
     const storedN = Number(d.stored_count)

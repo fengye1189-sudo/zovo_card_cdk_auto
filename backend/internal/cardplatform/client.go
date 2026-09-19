@@ -206,10 +206,21 @@ type PlanRegistryItem struct {
 	CheckoutAmountMinor int64  `json:"checkout_amount_minor"`
 }
 
+// PaymentRegion 卡台支持的付款地区。发码时可以指定，指定了兑换就按这个区付款。
+type PaymentRegion struct {
+	Country  string `json:"country"`
+	Currency string `json:"currency"`
+}
+
 type PlansResponse struct {
 	Version  int64               `json:"version"`
 	Plans    map[string]PlanInfo `json:"plans"`
 	Registry []PlanRegistryItem  `json:"registry,omitempty"`
+	// PaymentRegions 卡台下发的地区清单。★本站不要自己写一份★：
+	// 写死的那份和卡台 NormalizeGPTDirectRegion 的表迟早不一致，而不一致时
+	// 两边都不报错——多出来的地区发码被拒，少了的地区卡台支持了却选不到。
+	// 老版本卡台没有这个字段，缺失即为空，界面上就只剩「默认(PH)」，行为不变。
+	PaymentRegions []PaymentRegion `json:"payment_regions,omitempty"`
 }
 
 // GetPlans GET /gpt-direct/plans — 实时服务费与套餐开关
@@ -236,6 +247,14 @@ func (c *Client) GetPlans(ctx context.Context) (*PlansResponse, error) {
 		var items []PlanRegistryItem
 		if err := json.Unmarshal(reg, &items); err == nil {
 			out.Registry = items
+		}
+	}
+	// 付款地区清单，同样以卡台下发为准。解析失败/字段缺失都当空，
+	// 界面回落到只有「默认(PH)」——那正是本功能上线前的行为，安全。
+	if regions, has := raw["payment_regions"]; has {
+		var items []PaymentRegion
+		if err := json.Unmarshal(regions, &items); err == nil {
+			out.PaymentRegions = items
 		}
 	}
 	plansRaw, ok := raw["plans"]
@@ -321,6 +340,15 @@ type IssueCDKRequest struct {
 	PreferredIssuer      string `json:"preferred_issuer,omitempty"`
 	PreferredSegmentType string `json:"preferred_segment_type,omitempty"`
 	PreferredSegmentKey  string `json:"preferred_segment_key,omitempty"`
+	// PaymentCountry 这批码兑换时用哪个地区付款。空 = 菲律宾（存量行为）。
+	//
+	// ★与 preferred_* 不是一回事★：那三个只是购码快照、兑换不读；
+	// 这个兑换时真的会读——地区在卡台的兑换预检那一步就定死了。
+	//
+	// ★只传国家，不传币种★：币种由卡台按它的唯一真相源补。本站猜一个的话，
+	// 猜错会被卡台判成「付款地区与币种不匹配」，而那句报错完全指不到
+	// 「代理站把 CLP 写成了 CLF」这个真因。
+	PaymentCountry string `json:"payment_country,omitempty"`
 }
 
 // IssueCardPref 发码时的选卡偏好。
@@ -328,6 +356,8 @@ type IssueCardPref struct {
 	Issuer      string
 	SegmentType string
 	SegmentKey  string
+	// PaymentCountry 付款地区（国家码）。空 = 菲律宾。
+	PaymentCountry string
 }
 
 type IssuedCDK struct {
@@ -444,6 +474,7 @@ func (c *Client) IssueCDKs(ctx context.Context, plan string, count int, idem str
 		body.PreferredIssuer = strings.TrimSpace(pref[0].Issuer)
 		body.PreferredSegmentType = strings.TrimSpace(pref[0].SegmentType)
 		body.PreferredSegmentKey = strings.TrimSpace(pref[0].SegmentKey)
+		body.PaymentCountry = strings.ToUpper(strings.TrimSpace(pref[0].PaymentCountry))
 		if body.PreferredSegmentKey != "" && body.PreferredSegmentType == "" {
 			body.PreferredSegmentType = "product"
 		}
