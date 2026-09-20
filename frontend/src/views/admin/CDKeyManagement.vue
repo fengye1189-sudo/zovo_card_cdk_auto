@@ -1187,6 +1187,13 @@ async function loadMeta() {
       // 也不知道 ACC 的开关状态，照着它发码就是在赌。清空 + 上面的报错更诚实。
       plans.value = {}
       planRegistry.value = []
+      // ★地区同理，别把上一次的清单留在下拉里★
+      // 漏清的后果比看上去严重：档位空了、红字也弹了，但地区下拉还挂着上次的
+      // PH/US/JP/CL/EG。操作者会以为「只是价格没刷出来，地区还是对的」，
+      // 而此刻卡台到底还认不认这些地区，本站根本不知道——清单本来就是它下发的。
+      // 已选中的一并收回「默认」，与成功分支里那条「卡台下线某地区就收回」同一口径。
+      paymentRegions.value = []
+      form.payment_country = ''
       priceSource.value = 'unavailable'
     }
     if (br.ok) {
