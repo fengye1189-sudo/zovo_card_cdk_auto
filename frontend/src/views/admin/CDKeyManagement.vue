@@ -77,7 +77,12 @@
             <el-button size="small" @click="form.count = ISSUE_MAX">200</el-button>
           </el-button-group>
           <span class="text-sm text-muted">付款地区</span>
-          <el-select v-model="form.payment_country" size="small" style="width: 150px">
+          <!-- placeholder 必须显式给：Element Plus 不把空字符串当「已选中」，
+               所以未选时不会显示下面那条 value="" 的选项，而是回落到内置英文
+               placeholder「Select」——中文界面里突兀，更要命的是「不选就是菲律宾」
+               这个信息在下拉展开前完全看不到，操作者会以为自己还没选地区。 -->
+          <el-select v-model="form.payment_country" size="small" style="width: 150px"
+                     placeholder="默认(菲律宾)">
             <el-option label="默认(菲律宾)" value="" />
             <el-option v-for="r in paymentRegions" :key="r.country"
                        :label="`${regionLabel(r.country)} (${r.currency})`" :value="r.country" />
