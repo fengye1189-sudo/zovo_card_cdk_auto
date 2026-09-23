@@ -1,6 +1,6 @@
 # ZovoCard · CDK 卡密系統接入文檔
 
-更新：2026-09-23。與客戶《開放 API 文檔》CDK 章節同步。通用鑑權、套餐、用卡規則及 Webhook 請見該文檔 §2、§6.18.2、§6.18.5a、§7。
+更新：2026-09-24。與客戶《開放 API 文檔》CDK 章節同步。通用鑑權、套餐、用卡規則及 Webhook 請見該文檔 §2、§6.18.2、§6.18.5a、§7。
 
 - 所有者 API：`https://zovocard.com/openapi/v1`，服務端使用 `X-API-Key`。
 - 公開兌換：`https://zovocard.com/api/v1/cdk`，憑碼/令牌且綁定出口 IP/設備。
@@ -57,6 +57,15 @@ Base 為 `https://zovocard.com/api/v1/cdk`，無需 API Key，憑完整有效碼
 
 公開接口按 IP 限流：preview 每分鐘30次、redeem 20次、result 60次；預檢另有限制，遇429須退避。
 
+**非同步受理（2026-09-24）**：訂單、CDK預留、預檢消耗與查詢會話一起提交後即回應，由背景繼續選卡、注資和付款。沿用 HTTP 200、`code=0`、`data.id`，不要求改接202。新單初始為 `status=awaiting_card`、`stage=cdk_accepted`；`card_id` 可能省略/為0，請持續查詢結果。重啟後會由持久化訂單恢復。
+
+重試須保留原 `redemption_token/preflight_token/client_request_id` 及選卡參數；相同請求回傳原訂單，改參數回傳409 `IDEMPOTENCY_CONFLICT`。受理不等於付款成功，背景發現餘額/授權不足仍會在狀態和事件說明。
+
+```json
+{"code":0,"msg":"ok","data":{"id":456,"status":"awaiting_card","stage":"cdk_accepted","async_card_selection":true}}
+```
+
+
 | 步驟 | 方法與完整路徑 | 請求與結果 |
 | --- | --- | --- |
 | 1. 預覽 | `POST /api/v1/cdk/preview` | `{"code":"<完整CDK>"}` → `data.redemption_token/expires_at/plan/plan_flow/funding_cap_minor`，會話15分鐘有效 |
@@ -79,6 +88,8 @@ Base 為 `https://zovocard.com/api/v1/cdk`，無需 API Key，憑完整有效碼
 #### 6.18.8a 兌換時指定既有銀行卡（所有者 API）
 
 `POST /openapi/v1/gpt-direct/cdks/redeem` 以卡主 API Key 鑑權，兌換已購 CDK，不重收 CDK 服務費。購碼、發碼、持碼均不綁卡。
+
+所有者兌換未傳 `card_id` 時同樣非同步受理；明確指定卡仍先校驗並鎖定該卡，不會改為自動選卡。
 
 接入方須由**服務端**先呼叫公開 `/api/v1/cdk/preview`、`/preflight`，再以相同出口 IP 與 `X-Redemption-Device` 呼叫此接口，勿把 API Key 放入終端網頁。僅可兌換本賬戶、本 Key 簽發或官網購入未綁 App 的碼。
 
