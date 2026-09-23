@@ -3,11 +3,11 @@ package handler
 import (
 	"crypto/md5"
 	"crypto/rand"
-	"crypto/sha1"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"log"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,34 +35,15 @@ func HashSession(session string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func GenerateCDKCode(planType string) string {
-	normalized := normalizeCDKPlanType(planType)
-	seed := fmt.Sprintf("%s-%d-%s", normalized, time.Now().UnixNano(), randomCodeSegment(12))
-	sum := sha1.Sum([]byte(seed))
-	hexID := hex.EncodeToString(sum[:16])
-	return fmt.Sprintf(
-		"%s-%s-%s-%s-%s",
-		hexID[0:8],
-		hexID[8:12],
-		hexID[12:16],
-		hexID[16:20],
-		hexID[20:32],
-	)
-}
-
-func randomCodeSegment(length int) string {
-	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-	buffer := make([]byte, length)
-	if _, err := rand.Read(buffer); err != nil {
-		return strings.Repeat("X", length)
+func GenerateCDKCode(_ string) (string, error) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	output := make([]byte, 15)
+	for i := range output {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil { return "", err }
+		output[i] = alphabet[n.Int64()]
 	}
-
-	output := make([]byte, length)
-	for i, value := range buffer {
-		output[i] = alphabet[int(value)%len(alphabet)]
-	}
-
-	return string(output)
+	return string(output), nil
 }
 
 func parseLimit(raw string, fallback int) int {
@@ -115,7 +96,7 @@ type VerifyCDKResponse struct {
 
 // CreateTaskRequest request for creating a recharge task
 type CreateTaskRequest struct {
-	CDKCode   string `json:"cdk_code" binding:"required"`
+	CDKCode     string `json:"cdk_code" binding:"required"`
 	SessionJSON string `json:"session_json" binding:"required"`
 }
 
@@ -126,12 +107,12 @@ type ConfirmTaskRequest struct {
 
 // BillingInfo represents billing information
 type BillingInfo struct {
-	AccountEmail       string `json:"account_email"`
-	SubscriptionStatus string `json:"subscription_status"`
-	PlanType          string `json:"plan_type"`
-	BillingAmount     float64 `json:"billing_amount"`
-	Currency          string `json:"currency"`
-	NextBillingDate   string `json:"next_billing_date,omitempty"`
+	AccountEmail       string  `json:"account_email"`
+	SubscriptionStatus string  `json:"subscription_status"`
+	PlanType           string  `json:"plan_type"`
+	BillingAmount      float64 `json:"billing_amount"`
+	Currency           string  `json:"currency"`
+	NextBillingDate    string  `json:"next_billing_date,omitempty"`
 }
 
 type AdminLoginRequest struct {
@@ -149,6 +130,10 @@ type AdminLoginResponse struct {
 // ===== Recharge Portal APIs =====
 
 func AdminLogin(c *gin.Context) {
+	if auth.EmailLoginRequired() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "请使用商城统一邮箱验证登录", "login_url": "https://maple1189ai.com/api/integrations/cdk/sso?next=%2Fops%2Fautomation"})
+		return
+	}
 	var req AdminLoginRequest
 	if err := c.BindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
@@ -217,11 +202,20 @@ func AdminLogin(c *gin.Context) {
 
 // issueAdminSession 签发 JWT + HttpOnly cookie，供登录与安装向导共用。
 func issueAdminSession(c *gin.Context, userID int64, username, displayName string) (gin.H, error) {
+	identity, err := auth.AdminByID(userID)
+	if err != nil || !identity.Active {
+		return nil, auth.ErrAccessRevoked
+	}
 	expiration := time.Now().Add(24 * time.Hour)
+	verifiedUntil := c.GetInt64("admin_email_verified_until")
+	if verifiedUntil > 0 && time.Unix(verifiedUntil, 0).Before(expiration) { expiration = time.Unix(verifiedUntil, 0) }
+	if auth.EmailLoginRequired() && verifiedUntil <= time.Now().Unix() { return nil, auth.ErrAccessRevoked }
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.CustomClaims{
-		UserID:   userID,
-		IsAdmin:  true,
-		Username: username,
+		UserID:         userID,
+		IsAdmin:        true,
+		Username:       username,
+		SessionVersion: identity.SessionVersion,
+		EmailVerifiedUntil: verifiedUntil,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiration),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -238,11 +232,14 @@ func issueAdminSession(c *gin.Context, userID int64, username, displayName strin
 	csrf := newCSRFToken()
 	setAuthCookies(c, signedToken, csrf, int(time.Until(expiration).Seconds()))
 	return gin.H{
-		"token":      signedToken,
-		"username":   username,
-		"name":       displayName,
-		"expires_at": expiration.Format(time.RFC3339),
-		"csrf_token": csrf,
+		"token":        signedToken,
+		"username":     username,
+		"name":         displayName,
+		"expires_at":   expiration.Format(time.RFC3339),
+		"csrf_token":   csrf,
+		"role":         identity.Role,
+		"permissions":  auth.Permissions(identity.Role),
+		"login_source": identity.Source,
 	}, nil
 }
 
@@ -253,19 +250,31 @@ func AdminLogout(c *gin.Context) {
 }
 
 func AdminMe(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
 	userID, _ := c.Get("user_id")
 	username, _ := c.Get("username")
 	isAdmin, _ := c.Get("is_admin")
+	role := c.GetString("admin_role")
+	expiresAt, _ := c.Get("session_expires_at")
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":  userID,
-		"username": username,
-		"is_admin": isAdmin,
+		"user_id":      userID,
+		"username":     username,
+		"is_admin":     isAdmin,
+		"name":         c.GetString("admin_name"),
+		"role":         role,
+		"permissions":  auth.Permissions(role),
+		"login_source": c.GetString("admin_source"),
+		"expires_at":   expiresAt,
 	})
 }
 
 // AdminChangePassword 让已登录管理员修改自己的密码。
 func AdminChangePassword(c *gin.Context) {
+	if c.GetString("admin_source") == "marketplace" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "商城登录账号请在商城管理登录方式"})
+		return
+	}
 	type ChangePasswordRequest struct {
 		OldPassword string `json:"old_password" binding:"required"`
 		NewPassword string `json:"new_password" binding:"required"`
@@ -277,7 +286,7 @@ func AdminChangePassword(c *gin.Context) {
 		return
 	}
 
-	if len(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
+	if len(req.NewPassword) < 12 || len(req.NewPassword) > 72 || strings.TrimSpace(req.NewPassword) != req.NewPassword || db.IsWeakPassword(req.NewPassword) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码至少 12 位，且不能为常见弱口令"})
 		return
 	}
@@ -304,13 +313,14 @@ func AdminChangePassword(c *gin.Context) {
 		return
 	}
 
-	if err := db.SetAdminPassword(username, req.NewPassword); err != nil {
+	if err := changeAdminPasswordAndRevoke(username, req.NewPassword); err != nil {
 		log.Printf("change password error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "修改密码失败"})
 		return
 	}
 
 	auditAdmin(c, "change_password", "")
+	clearAuthCookies(c)
 	c.JSON(http.StatusOK, gin.H{"message": "密码已修改，请用新密码重新登录"})
 }
 
@@ -464,7 +474,7 @@ func CreateRechargeTask(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"task_id": taskID,
-		"status": "pending",
+		"status":  "pending",
 		"message": "任务创建成功，请确认信息",
 	})
 }
@@ -535,7 +545,7 @@ func ConfirmRechargeTask(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"task_id": req.TaskID,
-		"status": "submitted",
+		"status":  "submitted",
 		"message": "充值申请已提交，请等待处理",
 	})
 }
@@ -584,7 +594,7 @@ func SaveBillingInfo(c *gin.Context) {
 	type SaveBillingRequest struct {
 		SessionJSON        string  `json:"session_json" binding:"required"`
 		AccountEmail       string  `json:"account_email" binding:"required"`
-		SubscriptionStatus string `json:"subscription_status"`
+		SubscriptionStatus string  `json:"subscription_status"`
 		PlanType           string  `json:"plan_type"`
 		BillingAmount      float64 `json:"billing_amount"`
 		Currency           string  `json:"currency"`
@@ -633,21 +643,21 @@ func SaveBillingInfo(c *gin.Context) {
 // GetSystemStats 管理后台总览：CDK / 兑换订单以卡台 Open API 为准（不再读本地过渡表）。
 func GetSystemStats(c *gin.Context) {
 	out := gin.H{
-		"source":            "cardplatform",
-		"configured":        false,
-		"total_cdks":        0,
-		"unused_cdks":       0,
-		"active_cdks":       0, // 兼容旧字段 = unused
-		"active_cdkeys":     0, // 兼容前端曾用的字段名
-		"total_cdkeys":      0, // 兼容
-		"reserved_cdks":     0,
-		"consumed_cdks":     0,
-		"frozen_cdks":       0,
-		"disabled_cdks":     0,
-		"total_cdk_orders":  0,
-		"webhook_events":    0,
-		"counts_partial":    false,
-		"error":             "",
+		"source":           "cardplatform",
+		"configured":       false,
+		"total_cdks":       0,
+		"unused_cdks":      0,
+		"active_cdks":      0, // 兼容旧字段 = unused
+		"active_cdkeys":    0, // 兼容前端曾用的字段名
+		"total_cdkeys":     0, // 兼容
+		"reserved_cdks":    0,
+		"consumed_cdks":    0,
+		"frozen_cdks":      0,
+		"disabled_cdks":    0,
+		"total_cdk_orders": 0,
+		"webhook_events":   0,
+		"counts_partial":   false,
+		"error":            "",
 	}
 
 	var webhookCount int
@@ -737,7 +747,11 @@ func GenerateCDKeys(c *gin.Context) {
 
 	generatedCodes := make([]string, 0, req.Quantity)
 	for len(generatedCodes) < req.Quantity {
-		code := GenerateCDKCode(req.PlanType)
+		code, generationErr := GenerateCDKCode(req.PlanType)
+		if generationErr != nil {
+			c.JSON(500, gin.H{"error": "卡密生成失败"})
+			return
+		}
 		_, err := db.DB.Exec(`
 			INSERT INTO cd_keys (code, plan_type, status, expires_at, description)
 			VALUES (?, ?, 'active', ?, ?)

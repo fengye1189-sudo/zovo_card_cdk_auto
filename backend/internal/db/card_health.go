@@ -43,14 +43,9 @@ type CardFailStats struct {
 	Emails         []string
 }
 
-// InsertCardFailEvent 幂等写入失败事件（同 order_id+card_id 只记一次）。
-// inserted=false 表示已存在。
-func InsertCardFailEvent(ev CardFailEvent) (inserted bool, err error) {
-	if DB == nil {
-		return false, fmt.Errorf("db not ready")
-	}
+func normalizeCardFailEvent(ev CardFailEvent) (CardFailEvent, error) {
 	if ev.CardID <= 0 {
-		return false, fmt.Errorf("card_id required")
+		return ev, fmt.Errorf("card_id required")
 	}
 	ev.AccountEmailNorm = strings.ToLower(strings.TrimSpace(ev.AccountEmailNorm))
 	if ev.AccountEmailNorm == "" {
@@ -65,6 +60,19 @@ func InsertCardFailEvent(ev CardFailEvent) (inserted bool, err error) {
 	if ev.OrderID < 0 {
 		ev.OrderID = 0
 	}
+	return ev, nil
+}
+
+// InsertCardFailEvent 幂等写入失败事件（同 order_id+card_id 只记一次）。
+// inserted=false 表示已存在。
+func InsertCardFailEvent(ev CardFailEvent) (inserted bool, err error) {
+	if DB == nil {
+		return false, fmt.Errorf("db not ready")
+	}
+	ev, err = normalizeCardFailEvent(ev)
+	if err != nil {
+		return false, err
+	}
 
 	res, err := DB.Exec(`
 		INSERT OR IGNORE INTO card_fail_events
@@ -78,6 +86,66 @@ func InsertCardFailEvent(ev CardFailEvent) (inserted bool, err error) {
 	}
 	n, _ := res.RowsAffected()
 	return n > 0, nil
+}
+
+// InsertCardFailEventForCDKAttempt performs the current-attempt guard and the
+// first card-health write under one SQLite write transaction. This closes the
+// read-then-write race where a slow Result from an older attempt could pass a
+// handler check, rotate to a new attempt, and then teach the blocklist.
+//
+// authorized=false means the CDK/token/nonce no longer identify the current
+// attempt. inserted=false with authorized=true means the event already exists.
+func InsertCardFailEventForCDKAttempt(ev CardFailEvent, redemptionToken, attemptNonce string) (inserted, authorized bool, err error) {
+	if DB == nil {
+		return false, false, fmt.Errorf("db not ready")
+	}
+	ev, err = normalizeCardFailEvent(ev)
+	if err != nil {
+		return false, false, err
+	}
+	code := normalizeCDKCode(ev.CDKCode)
+	token := strings.TrimSpace(redemptionToken)
+	nonce := strings.TrimSpace(attemptNonce)
+	if code == "" || token == "" || nonce == "" {
+		return false, false, nil
+	}
+
+	tx, err := DB.Begin()
+	if err != nil {
+		return false, false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`
+		INSERT OR IGNORE INTO card_fail_events
+			(card_id, card_last_four, order_id, cdk_code, account_email_norm, email_source,
+			 error_code, order_status, verdict, created_at)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP
+		WHERE EXISTS (
+			SELECT 1 FROM cdk_session_bindings
+			WHERE cdk_code = ? AND redemption_token = ?
+			  AND COALESCE(attempt_nonce,'') = ?
+		)
+	`, ev.CardID, ev.CardLastFour, ev.OrderID, code, ev.AccountEmailNorm, ev.EmailSource,
+		ev.ErrorCode, ev.OrderStatus, ev.Verdict, code, token, nonce)
+	if err != nil {
+		return false, false, err
+	}
+	n, _ := res.RowsAffected()
+	inserted = n > 0
+	var current int
+	if err := tx.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM cdk_session_bindings
+			WHERE cdk_code = ? AND redemption_token = ?
+			  AND COALESCE(attempt_nonce,'') = ?
+		)
+	`, code, token, nonce).Scan(&current); err != nil {
+		return false, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, false, err
+	}
+	return inserted, current == 1, nil
 }
 
 // GetCardFailStats 统计某卡失败次数与去重邮箱数（不含 unknown 时仍计入 fail，但 distinct 可配置）。
@@ -287,9 +355,9 @@ func ListActiveBlockedCardIDs() ([]int64, error) {
 
 // CardHealthPolicy 本站卡健康策略（site_settings）。
 type CardHealthPolicy struct {
-	Enabled        bool   `json:"enabled"`
-	FailThreshold  int    `json:"fail_threshold"`  // 默认 2
-	FreezeOnBlock  bool   `json:"freeze_on_block"` // 判定坏卡后调卡台冻结
+	Enabled       bool `json:"enabled"`
+	FailThreshold int  `json:"fail_threshold"`  // 默认 2
+	FreezeOnBlock bool `json:"freeze_on_block"` // 判定坏卡后调卡台冻结
 	// RequireKnownEmail：失败记录邮箱均为 unknown 时不拉黑（避免无邮箱误伤）
 	RequireKnownEmail bool `json:"require_known_email"`
 }
@@ -304,4 +372,3 @@ func DefaultCardHealthPolicy() CardHealthPolicy {
 		RequireKnownEmail: true,
 	}
 }
-

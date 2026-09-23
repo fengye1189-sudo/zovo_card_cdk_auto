@@ -94,7 +94,7 @@
             <input
               ref="mailboxFileRef"
               type="file"
-              accept=".xlsx,.xls,.csv,.txt"
+              accept=".csv,.txt"
               class="hidden"
               @change="onPickMailboxFile"
             />
@@ -383,6 +383,7 @@ interface BatchItem {
   status: ItemStatus
   verifyMsg: string
   redemptionToken: string
+  attemptToken: string
   progressMsg: string
   email: string
   cardLastFour: string
@@ -427,7 +428,9 @@ const sessionBoxRef = ref<HTMLTextAreaElement | null>(null)
 const mailboxFileRef = ref<HTMLInputElement | null>(null)
 const lastFilledItemId = ref<string | null>(null)
 
-const pollTargets = ref<Record<string, { token: string; terminal: boolean }>>({})
+const pollTargets = ref<
+  Record<string, { token: string; attemptToken: string; code: string; terminal: boolean; missingPolls: number }>
+>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let pollInFlight = false
 
@@ -435,7 +438,7 @@ const parsedCdks = computed(() => parseCdks(cdkText.value))
 const parsedMailboxes = computed(() => parseMailboxLines(mailboxText.value))
 
 watch(parsedMailboxes, (rows) => {
-  // 文本粘贴优先；Excel 导入写入 mailboxPool 后也会同步到 mailboxText
+  // 文本粘贴优先；CSV 导入写入 mailboxPool 后也会同步到 mailboxText
   if (credMode.value === 'mailbox') mailboxPool.value = rows
 })
 
@@ -510,7 +513,7 @@ async function api(path: string, init: RequestInit = {}) {
   return { r, data }
 }
 
-const TERMINAL = new Set(['completed', 'declined', 'failed_precharge', 'cancelled', 'failed'])
+const TERMINAL = new Set(['completed', 'declined', 'failed_precharge', 'cancelled', 'failed', 'query_expired'])
 
 function isTerminal(st: string) {
   return TERMINAL.has(String(st || '').toLowerCase())
@@ -551,10 +554,42 @@ async function pollBatch() {
     await Promise.all(
       entries.map(async ([id, target]) => {
         try {
-          const { r, data } = await api(
-            '/api/v1/public/cdk/result?token=' + encodeURIComponent(target.token),
-          )
-          if (!r.ok) return
+          let { r, data } = await api('/api/v1/public/cdk/result', {
+            method: 'POST',
+            body: JSON.stringify({
+              redemption_token: target.token,
+              attempt_token: target.attemptToken,
+            }),
+          })
+          if ((r.status === 404 || r.status === 409) && target.code) {
+            ;({ r, data } = await api('/api/v1/public/cdk/result-by-code', {
+              method: 'POST',
+              body: JSON.stringify({ code: target.code }),
+            }))
+          }
+          if (!r.ok) {
+            if (r.status === 410 || data?.status === 'query_expired') {
+              updateItem(id, {
+                status: 'failed',
+                progressMsg: data?.error || '7 天查询期已结束',
+                error: data?.error || '7 天查询期已结束',
+              })
+              pollTargets.value[id] = { ...target, terminal: true }
+            } else if (r.status === 404) {
+              const missingPolls = target.missingPolls + 1
+              if (missingPolls >= 20) {
+                const msg = '暂未确认本次提交结果，请稍后用同一张卡密查询；请勿重复提交。'
+                updateItem(id, { status: 'processing', progressMsg: msg, error: msg })
+                pollTargets.value[id] = { ...target, missingPolls, terminal: true }
+              } else {
+                pollTargets.value[id] = { ...target, missingPolls }
+              }
+            }
+            return
+          }
+          if (target.missingPolls) {
+            pollTargets.value[id] = { ...target, missingPolls: 0 }
+          }
           const order = data?.order || data?.data?.order || data?.data || data || {}
           const st = String(order.status || data?.status || data?.data?.status || '')
           const message = String(
@@ -599,8 +634,11 @@ async function pollBatch() {
   }
 }
 
-function startPoll(id: string, token: string) {
-  pollTargets.value = { ...pollTargets.value, [id]: { token, terminal: false } }
+function startPoll(id: string, token: string, code: string, attemptToken: string) {
+  pollTargets.value = {
+    ...pollTargets.value,
+    [id]: { token, attemptToken, code, terminal: false, missingPolls: 0 },
+  }
   if (!pollTimer) {
     void pollBatch()
     pollTimer = setInterval(() => void pollBatch(), BATCH_POLL_INTERVAL_MS)
@@ -669,7 +707,7 @@ async function onPickFile(file: File | null) {
     }
   } catch (e) {
     sessionPool.value = []
-    importMsg.value = '读取 Excel 失败：' + (e instanceof Error ? e.message : '未知错误')
+    importMsg.value = '读取文件失败：' + (e instanceof Error ? e.message : '未知错误')
   } finally {
     importing.value = false
   }
@@ -745,6 +783,7 @@ async function handleVerifyBatch() {
     status: 'pending_verify',
     verifyMsg: '验证中…',
     redemptionToken: '',
+    attemptToken: '',
     progressMsg: '',
     email: '',
     cardLastFour: '',
@@ -776,7 +815,8 @@ async function handleVerifyBatch() {
         const token = String(
           data?.redemption_token || data?.data?.redemption_token || data?.token || '',
         )
-        if (!token) {
+        const attemptToken = String(data?.attempt_token || '')
+        if (!token || !attemptToken) {
           return {
             ...item,
             status: 'verify_fail' as const,
@@ -791,6 +831,7 @@ async function handleVerifyBatch() {
           verifyMsg: '有效',
           planLabel: planLabelOf(body),
           redemptionToken: token,
+          attemptToken,
         }
       } catch {
         return {
@@ -866,6 +907,8 @@ async function runPreflightRedeem(
   fallbackEmail: string,
 ): Promise<'ok' | 'fail'> {
   let redemptionToken = item.redemptionToken
+  let attemptToken = item.attemptToken
+  let redeemStarted = false
   try {
     if (!redemptionToken) {
       const preview = await api('/api/v1/public/cdk/preview', {
@@ -880,7 +923,8 @@ async function runPreflightRedeem(
       redemptionToken = String(
         preview.data?.redemption_token || preview.data?.data?.redemption_token || '',
       )
-      if (!redemptionToken) {
+      attemptToken = String(preview.data?.attempt_token || '')
+      if (!redemptionToken || !attemptToken) {
         updateItem(item.id, {
           status: 'failed',
           progressMsg: '未返回 redemption_token',
@@ -888,7 +932,7 @@ async function runPreflightRedeem(
         })
         return 'fail'
       }
-      updateItem(item.id, { redemptionToken })
+      updateItem(item.id, { redemptionToken, attemptToken })
     }
 
     const { r, data } = await api('/api/v1/public/cdk/preflight', {
@@ -896,6 +940,7 @@ async function runPreflightRedeem(
       body: JSON.stringify({
         code: item.cardKey,
         redemption_token: redemptionToken,
+        attempt_token: attemptToken,
         credential,
       }),
     })
@@ -918,10 +963,12 @@ async function runPreflightRedeem(
     updateItem(item.id, { email, progressMsg: '预检通过，提交兑换…' })
 
     const client_request_id = `batch-${deviceId.slice(0, 8)}-${Date.now()}-${item.id}`
+    redeemStarted = true
     const redeem = await api('/api/v1/public/cdk/redeem', {
       method: 'POST',
       body: JSON.stringify({
         redemption_token: redemptionToken,
+        attempt_token: attemptToken,
         preflight_token: preflightToken,
         client_request_id,
       }),
@@ -936,6 +983,19 @@ async function runPreflightRedeem(
     const orderEmail = String(order.account_email || order.email || email).trim()
 
     if (!redeem.r.ok && redeem.r.status !== 202) {
+      const submitState = redeem.r.headers.get('X-Maple-Submit-State') || ''
+      if (submitState !== 'not-submitted') {
+        const pendingMessage = message || redeem.data?.error || '提交结果待确认，正在查询；请勿重复提交。'
+        updateItem(item.id, {
+          status: 'processing',
+          email: orderEmail || email,
+          cardLastFour: cardLastFour || item.cardLastFour,
+          progressMsg: pendingMessage,
+          error: '',
+        })
+        startPoll(item.id, redemptionToken, item.cardKey, attemptToken)
+        return 'ok'
+      }
       updateItem(item.id, {
         status: 'failed',
         email: orderEmail || email,
@@ -971,10 +1031,19 @@ async function runPreflightRedeem(
         progressMsg: message || '处理中…',
         error: '',
       })
-      startPoll(item.id, redemptionToken)
+      startPoll(item.id, redemptionToken, item.cardKey, attemptToken)
     }
     return 'ok'
   } catch {
+    if (redeemStarted && redemptionToken) {
+      updateItem(item.id, {
+        status: 'processing',
+        progressMsg: '网络连接中断，正在查询本次提交结果；请勿重复提交。',
+        error: '',
+      })
+      startPoll(item.id, redemptionToken, item.cardKey, attemptToken)
+      return 'ok'
+    }
     updateItem(item.id, {
       status: 'failed',
       progressMsg: '网络异常，请稍后重试或联系客服确认是否已受理',
@@ -1081,7 +1150,7 @@ async function handleAutoSubmitAll() {
 
   const pool = sessionPool.value
   if (!pool.length) {
-    sessionError.value = '请先导入 Excel Session'
+    sessionError.value = '请先导入 CSV Session'
     return
   }
   autoSubmitting.value = true
@@ -1100,7 +1169,7 @@ async function handleAutoSubmitAll() {
         if (!sess) {
           updateItem(item.id, {
             status: 'failed',
-            progressMsg: `Excel 只有 ${pool.length} 条 Session，第 ${excelIdx + 1} 张无对应`,
+            progressMsg: `CSV 只有 ${pool.length} 条 Session，第 ${excelIdx + 1} 张无对应`,
             error: 'Session 不足',
           })
           continue

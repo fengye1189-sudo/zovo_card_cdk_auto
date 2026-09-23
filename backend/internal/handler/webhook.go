@@ -73,6 +73,7 @@ func CardPlatformWebhook(c *gin.Context) {
 	}
 	// 本站 CDK 状态：兑换完成 → consumed（避免列表仍显示「未使用」）
 	if strings.HasPrefix(strings.ToLower(eventType), "gpt_direct.") {
+		notifyAutomationWebhook(payload)
 		applyCDKStatusFromWebhook(payload, eventType)
 	}
 	// 卡健康：失败/成功终态观察（同卡多邮箱失败 → 拉黑）

@@ -2,6 +2,8 @@ package server
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -122,6 +124,15 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		identity, err := auth.ResolveAdminSession(claims)
+		if err != nil {
+			if !errors.Is(err, auth.ErrAccessRevoked) && !errors.Is(err, sql.ErrNoRows) {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "登录状态暂时无法核对，请稍后刷新"})
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "登录已失效，请重新登录", "error_code": "unauthorized"})
+			return
+		}
 
 		// 基于 cookie 认证的写操作必须通过 CSRF 双提交校验（Bearer 头不受 CSRF 影响，跳过）
 		if fromCookie && isUnsafeMethod(c.Request.Method) {
@@ -135,9 +146,15 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			}
 		}
 
-		c.Set("user_id", claims.UserID)
-		c.Set("is_admin", claims.IsAdmin)
-		c.Set("username", claims.Username)
+		c.Set("user_id", identity.ID)
+		c.Set("is_admin", true)
+		c.Set("username", identity.Username)
+		c.Set("admin_name", identity.Name)
+		c.Set("admin_role", identity.Role)
+		c.Set("admin_source", identity.Source)
+		if claims.ExpiresAt != nil {
+			c.Set("session_expires_at", claims.ExpiresAt.Time)
+		}
 		c.Next()
 	}
 }
@@ -145,11 +162,54 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 func AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		isAdmin, ok := c.Get("is_admin")
-		if !ok || isAdmin != true {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+		if !ok || isAdmin != true || !adminRouteAllowed(c.GetString("admin_role"), c.Request.Method, c.FullPath()) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "当前账号没有此操作权限", "error_code": "permission_denied"})
 			c.Abort()
 			return
 		}
 		c.Next()
 	}
+}
+
+// AdminPermissionMiddleware applies explicit permissions to new endpoints.
+// Use after JWTAuthMiddleware; AdminAuthMiddleware remains the default-deny route gate.
+func AdminPermissionMiddleware(permission string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !auth.HasPermission(c.GetString("admin_role"), permission) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "当前账号没有此操作权限", "error_code": "permission_denied"})
+			return
+		}
+		c.Next()
+	}
+}
+
+func adminRouteAllowed(role, method, route string) bool {
+	if role == auth.RoleOwner {
+		return true
+	}
+	if role != auth.RoleOperator && role != auth.RoleViewer {
+		return false
+	}
+	if method == http.MethodPost && route == "/api/v1/auth/admin/change-password" {
+		return true
+	}
+	if (method == http.MethodPost && route == "/api/v1/admin/local-cdks/search") || (method == http.MethodGet && route == "/api/v1/admin/local-cdks/reserve") {
+		return true
+	}
+	if method == http.MethodPost && route == "/api/v1/admin/operations/customers/search" {
+		return true
+	}
+	if method == http.MethodGet {
+		switch route {
+		case "/api/v1/admin/local-cdks", "/api/v1/admin/operations/records", "/api/v1/admin/operations/records/export", "/api/v1/admin/operations/records/:id/support", "/api/v1/admin/operations/products", "/api/v1/admin/operations/dashboard", "/api/v1/admin/operations/reply-templates":
+			return true
+		}
+	}
+	if role == auth.RoleOperator {
+		switch method + " " + route {
+		case "POST /api/v1/admin/local-cdks", "POST /api/v1/admin/local-cdks/:id/disable", "POST /api/v1/admin/local-cdks/:id/reconcile", "POST /api/v1/admin/operations/records/:id/support", "PUT /api/v1/admin/operations/records/:id/support", "PATCH /api/v1/admin/operations/records/:id/support":
+			return true
+		}
+	}
+	return false
 }

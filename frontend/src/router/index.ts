@@ -7,6 +7,14 @@ const OPS_BASE = '/ops'
 const routes: RouteRecordRaw[] = [
   {
     path: '/',
+    // The public domain is a redemption portal.  Send visitors straight to
+    // the single-code redemption form instead of making them choose a tool
+    // from the marketing-style landing page first.
+    redirect: '/recharge',
+  },
+  // Keep the former overview reachable for anyone who has bookmarked it.
+  {
+    path: '/home',
     name: 'Home',
     component: () => import('../views/HomeView.vue'),
   },
@@ -45,6 +53,13 @@ const routes: RouteRecordRaw[] = [
     name: 'Recharge',
     component: () => import('../views/user/RechargeView.vue'),
   },
+  // MAPLE- 前缀是本站签发的卡密，和卡台供应的 CDK 走不同的安全校验链路。
+  // 该页由 /recharge 自动转入，保留独立路径以避免把本站卡密发送给上游卡台。
+  {
+    path: '/maple/redeem',
+    name: 'MapleRedeem',
+    component: () => import('../views/user/LocalRedeemView.vue'),
+  },
   {
     path: '/batch',
     name: 'BatchRedeem',
@@ -74,9 +89,23 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../layouts/AdminLayout.vue'),
     meta: { requiresAuth: true, requiresAdmin: true },
     children: [
-      { path: '', name: 'AdminDashboard', component: () => import('../views/admin/AdminDashboard.vue') },
-      { path: 'cdkeys', name: 'CDKeyManagement', component: () => import('../views/admin/CDKeyManagement.vue') },
-      { path: 'orders', name: 'OrderReconcile', component: () => import('../views/admin/OrderReconcile.vue') },
+      // The operations console opens on the local Maple CDK workspace.  The
+      // older supplier screens remain available under explicit legacy paths.
+      { path: '', redirect: `${OPS_BASE}/records` },
+      { path: 'records', name: 'OperationsRecords', component: () => import('../views/admin/OperationsRecords.vue'), meta: { permission: 'records.read' } },
+      { path: 'customers', name: 'OperationsCustomers', component: () => import('../views/admin/OperationsCustomers.vue'), meta: { permission: 'records.read' } },
+      { path: 'products', name: 'OperationsProducts', component: () => import('../views/admin/OperationsProducts.vue'), meta: { permission: 'catalog.read' } },
+      { path: 'health', name: 'OperationsHealth', component: () => import('../views/admin/OperationsHealth.vue'), meta: { permission: 'system.manage' } },
+      { path: 'team', name: 'TeamManagement', component: () => import('../views/admin/TeamManagement.vue'), meta: { permission: 'team.manage' } },
+      { path: 'api-access', name: 'IntegrationAccess', component: () => import('../views/admin/IntegrationAccess.vue'), meta: { permission: 'system.manage' } },
+      { path: 'messages', name: 'OperationsMessages', component: () => import('../views/admin/OperationsMessages.vue'), meta: { permission: 'records.read' } },
+      { path: 'finance', name: 'OperationsFinance', component: () => import('../views/admin/FinancePanel.vue'), meta: { permission: 'system.manage' } },
+      { path: 'legacy-overview', name: 'AdminDashboard', component: () => import('../views/admin/AdminDashboard.vue') },
+      { path: 'cdkeys', name: 'CDKeyManagement', component: () => import('../views/admin/LocalCDKManagement.vue'), meta: { permission: 'cdks.issue' } },
+      { path: 'upstream-cdkeys', name: 'UpstreamCDKeys', component: () => import('../views/admin/CDKeyManagement.vue') },
+      { path: 'orders', name: 'DirectOrders', component: () => import('../views/admin/DirectOrders.vue') },
+      { path: 'automation', name: 'Automation', component: () => import('../views/admin/Automation.vue') },
+      { path: 'legacy-orders', name: 'OrderReconcile', component: () => import('../views/admin/OrderReconcile.vue') },
       { path: 'appearance', name: 'SiteAppearance', component: () => import('../views/admin/SiteAppearance.vue') },
       { path: 'integration', name: 'CardIntegration', component: () => import('../views/admin/CardIntegration.vue') },
       { path: 'audit', name: 'AuditLogs', component: () => import('../views/admin/AuditLogs.vue') },
@@ -133,14 +162,23 @@ router.beforeEach(async (to) => {
     return `${OPS_BASE}/login`
   }
 
-  if (to.meta.requiresAdmin && !authStore.isLoggedIn) {
+  if (to.meta.requiresAdmin && (!authStore.identityVerified || !authStore.isLoggedIn)) {
+    await authStore.refreshIdentity()
+  }
+  if (to.meta.requiresAdmin && (!authStore.identityVerified || !authStore.isLoggedIn)) {
     return {
       path: `${OPS_BASE}/login`,
       query: { redirect: to.fullPath },
     }
   }
 
-  if ((to.path === `${OPS_BASE}/login` || to.path === '/auth/login') && authStore.isLoggedIn) {
+  if (to.meta.requiresAdmin && !authStore.can(String(to.meta.permission || 'system.manage'))) {
+    return `${OPS_BASE}/records`
+  }
+
+  // A marketplace SSO redirect deliberately lands on the login component to
+  // restore its local display metadata from the newly-issued HttpOnly cookie.
+  if ((to.path === `${OPS_BASE}/login` || to.path === '/auth/login') && authStore.isLoggedIn && authStore.identityVerified && to.query.sso !== '1') {
     return OPS_BASE
   }
 })

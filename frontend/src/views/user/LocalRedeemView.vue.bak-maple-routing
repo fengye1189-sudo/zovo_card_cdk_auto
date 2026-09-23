@@ -1,0 +1,53 @@
+<template>
+  <main class="min-h-screen py-10 sm:py-14"><div class="max-w-2xl mx-auto px-5 space-y-6">
+    <header class="flex justify-between gap-4"><div><h1 class="text-3xl font-bold text-ink mb-2">GPT Plus 兑换</h1><p class="text-muted">输入卡密，按提示完成账户升级</p></div><ThemeToggle /></header>
+    <div v-if="step < 4" class="grid grid-cols-3 gap-2 text-sm text-center" aria-label="兑换进度"><span v-for="(label,i) in ['CDK 验证','提交账号','确认提交']" :key="label" class="pill" :class="step===i+1?'pill-info':''" :aria-current="step===i+1?'step':undefined">{{ i+1 }}. {{ label }}</span></div>
+    <p v-if="error" class="alert alert-error" role="alert">{{ error }}</p>
+    <form v-if="step===1" class="card space-y-4" @submit.prevent="preview">
+      <label for="local-code" class="block text-xl font-bold">验证 CDK 卡密</label>
+      <input id="local-code" v-model="code" class="input font-mono" placeholder="请输入或粘贴 MAPLE 卡密" autocomplete="off" spellcheck="false" maxlength="100" />
+      <button class="btn-primary w-full" :disabled="busy || !code.trim()">{{ busy?'验证中…':'验证 CDK' }}</button>
+      <p class="text-sm text-muted">已提交过？重新输入同一张卡密即可查询进度。</p>
+    </form>
+    <form v-else-if="step===2" class="card space-y-4" @submit.prevent="preflight">
+      <h2 class="text-xl font-bold">提交要升级的账号</h2>
+      <p class="text-muted text-sm">请粘贴该账号的完整 Session 信息。它是敏感登录凭证，仅为本次充值临时转发至 Zovo，本站不保存原文。不要填写邮箱密码。</p>
+      <label for="local-session" class="block">账号 Session</label>
+      <textarea id="local-session" v-model="session" class="input font-mono h-40" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Session JSON" />
+      <div class="flex gap-3"><button type="button" class="btn-secondary" :disabled="busy" @click="reset">返回</button><button class="btn-primary flex-1" :disabled="busy || !session.trim()">{{ busy?'验证账号中…':'验证账号' }}</button></div>
+    </form>
+    <section v-else-if="step===3" class="card space-y-4">
+      <h2 class="text-xl font-bold">确认兑换</h2>
+      <dl class="space-y-3"><div><dt class="text-muted">充值账号</dt><dd class="font-bold break-all">{{ account.email }}</dd></div><div><dt class="text-muted">兑换套餐</dt><dd>ChatGPT Plus</dd></div><div><dt class="text-muted">当前套餐</dt><dd>{{ account.current_plan || '未返回' }}</dd></div></dl>
+      <p class="text-sm text-muted">请核对账号。提交后将开始真实充值，处理中不要重复操作。</p>
+      <label class="flex gap-2"><input v-model="confirmed" type="checkbox" />我确认账号无误，并同意提交兑换</label>
+      <div class="flex gap-3"><button class="btn-secondary" :disabled="busy" @click="step=2;confirmed=false">修改账号</button><button class="btn-primary flex-1" :disabled="busy || !confirmed" @click="redeem">{{ busy?'提交中…':'确认兑换' }}</button></div>
+    </section>
+    <section v-else class="card space-y-4" aria-live="polite">
+      <h2 class="text-xl font-bold">{{ statusLabel }}</h2><p>{{ result.message || '正在查询订单结果…' }}</p><p v-if="result.email" class="break-all">充值账号：{{ result.email }}</p>
+      <button class="btn-secondary" :disabled="busy" @click="query">刷新结果</button><button class="app-link ml-4" :disabled="busy" @click="reset">查询其他卡密</button>
+      <p class="text-sm text-muted">刷新页面不会再次付款。待核对不代表失败退款，请联系商家处理。</p>
+    </section>
+    <footer class="text-sm text-muted"><router-link class="app-link" to="/legacy/recharge">旧版 Zovo 卡密兑换及查询</router-link></footer>
+  </div></main>
+</template>
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import ThemeToggle from '../../components/ThemeToggle.vue'
+const step=ref(1),code=ref(''),session=ref(''),token=ref(''),pf=ref(''),busy=ref(false),error=ref(''),confirmed=ref(false),account=ref<any>({}),result=ref<any>({})
+const device=localStorage.getItem('maple-device') || crypto.randomUUID();localStorage.setItem('maple-device',device)
+let timer:ReturnType<typeof setTimeout>|undefined
+const statusLabel=computed(()=>({completed:'兑换成功',pending:'充值处理中',review:'订单待核对',failed:'订单未完成',unused:'尚未提交充值'} as Record<string,string>)[result.value.status] || '兑换进度')
+async function api(path:string,body:any){const r=await fetch('/api/v1/public/local-cdk/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Redemption-Device':device},body:JSON.stringify(body),cache:'no-store'});const d=await r.json();if(!r.ok){if(r.status===401){reset()}throw new Error(d.error || '服务暂时不可用，请稍后再试')}return d}
+async function run(action:()=>Promise<void>){if(busy.value)return;busy.value=true;error.value='';try{await action()}catch(e:any){error.value=e.message || '网络连接异常，请稍后再试'}finally{busy.value=false}}
+function credential(){return {mode:'session',session:session.value.trim()}}
+async function preview(){await run(async()=>{const d=await api('preview',{code:code.value.trim()});token.value=d.redemption_token;sessionStorage.setItem('maple-redemption',token.value);code.value='';if(d.status!=='unused'){step.value=4;await refresh()}else{step.value=2}})}
+async function preflight(){await run(async()=>{account.value=await api('preflight',{redemption_token:token.value,credential:credential()});pf.value=account.value.preflight_token;confirmed.value=false;step.value=3})}
+async function redeem(){if(!confirmed.value)return;await run(async()=>{try{result.value=await api('redeem',{redemption_token:token.value,preflight_token:pf.value,credential:credential(),confirmed:true});step.value=4;schedule()}catch(e){step.value=4;schedule();throw e}finally{session.value='';pf.value='';confirmed.value=false}})}
+function schedule(){if(timer)clearTimeout(timer);if(step.value===4 && !['completed','failed','unused','disabled'].includes(result.value.status))timer=setTimeout(()=>query(),6000)}
+async function refresh(){try{result.value=await api('result',{redemption_token:token.value});if(result.value.status==='unused'){step.value=2;error.value='尚未提交充值，请重新验证账号。'}}finally{schedule()}}
+async function query(){await run(refresh)}
+function reset(){if(timer)clearTimeout(timer);sessionStorage.removeItem('maple-redemption');step.value=1;token.value='';pf.value='';session.value='';code.value='';error.value='';result.value={};confirmed.value=false}
+onMounted(()=>{const saved=sessionStorage.getItem('maple-redemption');if(saved){token.value=saved;step.value=4;query()}})
+onUnmounted(()=>{if(timer)clearTimeout(timer);session.value=''})
+</script>

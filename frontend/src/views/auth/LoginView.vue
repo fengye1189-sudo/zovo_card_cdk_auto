@@ -12,6 +12,8 @@
           <p class="mt-2 text-sm text-muted">{{ t('login.subtitle') }}</p>
         </div>
 
+        <a class="btn-primary block text-center" href="https://maple1189ai.com/api/integrations/cdk/sso?next=%2Fops%2Fautomation">🍁 商城统一邮箱登录</a>
+        <p class="text-sm text-muted">已在商城完成邮箱验证时，无需再次输入验证码。</p>
         <div class="form-group">
           <label>{{ t('login.username') }}</label>
           <input v-model="form.username" class="input" :placeholder="t('login.usernamePlaceholder')" autocomplete="username" @keyup.enter="submit" />
@@ -36,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../../stores/auth'
@@ -56,11 +58,49 @@ const form = reactive({
 const loading = ref(false)
 const errorMessage = ref('')
 
+const completeMarketplaceSso = async () => {
+  if (route.query.sso !== '1') return
+
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    // The signed assertion has already been exchanged server-side for an
+    // HttpOnly cookie. This call only reads the authenticated identity so the
+    // UI can restore its non-sensitive display metadata.
+    const response = await fetch('/api/v1/auth/admin/me', { credentials: 'include' })
+    const data = await response.json()
+    if (!response.ok || !data?.is_admin || !data?.username) {
+      throw new Error('invalid marketplace SSO session')
+    }
+
+    authStore.save({
+      username: data.username,
+      name: data.name || data.username,
+      role: data.role,
+      permissions: data.permissions,
+      loginSource: data.login_source,
+      // The server-side session cookie is authoritative; this only prevents
+      // the client router from sending a valid SSO user back to the login UI.
+      expiresAt: data.expires_at || new Date(Date.now() + 23 * 60 * 60 * 1000).toISOString(),
+    })
+    const redirect = typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/ops')
+      ? route.query.redirect
+      : '/ops/automation'
+    await router.replace(redirect)
+  } catch {
+    errorMessage.value = '商城单点登录已失效，请回到商城后台重新打开。'
+  } finally {
+    loading.value = false
+  }
+}
+
 // 安装向导写过临时凭据时预填一次后清掉，避免长期留在 sessionStorage
 if (form.username || form.password) {
   sessionStorage.removeItem('post_setup_user')
   sessionStorage.removeItem('post_setup_pass')
 }
+
+onMounted(() => { void completeMarketplaceSso() })
 
 const submit = async () => {
   loading.value = true
@@ -90,6 +130,9 @@ const submit = async () => {
       name: data.name,
       expiresAt: data.expires_at,
       token: data.token,
+      role: data.role,
+      permissions: data.permissions,
+      loginSource: data.login_source,
     })
 
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/ops'

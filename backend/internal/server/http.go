@@ -8,8 +8,10 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/auth"
 	"github.com/tuzi/cdk-recharge-system/internal/config"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/handler"
@@ -29,6 +31,24 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	// Initialize database
 	if err := db.Init(&cfg.Database); err != nil {
+		return nil, err
+	}
+	if err := db.InitLocalCDK(); err != nil {
+		return nil, err
+	}
+	if err := auth.InitAdminAccess(); err != nil {
+		return nil, err
+	}
+	if err := handler.InitOperationsProducts(); err != nil {
+		return nil, err
+	}
+	if err := handler.InitOperationsRecords(); err != nil {
+		return nil, err
+	}
+	if err := handler.InitOperationsAPI(); err != nil {
+		return nil, err
+	}
+	if err := handler.InitOperations(ctx); err != nil {
 		return nil, err
 	}
 
@@ -51,6 +71,9 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	// 启动卡台产品状态后台同步（每3分钟）
 	plansync.Start(ctx)
+	db.StartCDKQueryCleanup(ctx)
+	handler.StartAutomation(ctx)
+	handler.StartNotificationDispatcher(ctx)
 
 	return &Server{
 		engine: engine,
@@ -102,6 +125,13 @@ func setupRoutes(r *gin.Engine) {
 
 	// Health check
 	r.GET("/health", func(c *gin.Context) {
+		c.Header("Cache-Control", "no-store")
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		if db.DB == nil || db.DB.PingContext(ctx) != nil {
+			c.JSON(503, gin.H{"status": "unavailable"})
+			return
+		}
 		c.JSON(200, gin.H{
 			"status":  "ok",
 			"message": "Recharge System is running",
@@ -121,6 +151,8 @@ func setupRoutes(r *gin.Engine) {
 		auth := api.Group("/auth")
 		{
 			auth.POST("/admin/login", handler.AdminLogin)
+			// 商城管理员无感进入：短期 HMAC 令牌，服务端验签并单次消费。
+			auth.GET("/marketplace-sso", handler.MarketplaceSSO)
 			auth.POST("/admin/logout", handler.AdminLogout)
 			auth.GET("/admin/me", JWTAuthMiddleware(), handler.AdminMe)
 			auth.POST("/admin/change-password", JWTAuthMiddleware(), AdminAuthMiddleware(), handler.AdminChangePassword)
@@ -135,36 +167,55 @@ func setupRoutes(r *gin.Engine) {
 
 		// 公开站点配置（品牌/皮肤，无密钥）
 		api.GET("/public/site", handler.PublicSiteConfig)
+		local := api.Group("/public/local-cdk", handler.LocalCDKLimit())
+		local.POST("/preview", handler.LocalCDKPreview)
+		local.POST("/replace", handler.LocalCDKReplace)
+		local.POST("/preflight", handler.LocalCDKPreflight)
+		local.POST("/redeem", handler.LocalCDKRedeem)
+		local.POST("/result", handler.LocalCDKResult)
 
 		// 卡台 CDK 公开兑换 BFF + 实时服务费展示
+		// Existing batch redemption can legitimately issue many preview,
+		// preflight, redeem and polling calls from one IP. Keep this group free
+		// of the low-volume lookup limiter; individual handlers still enforce
+		// POST bodies, size caps and no-store responses.
 		pubCDK := api.Group("/public/cdk")
 		{
 			pubCDK.GET("/plans", handler.PublicCDKPlans)
-			pubCDK.POST("/preview", handler.PublicCDKPreview)
-			pubCDK.POST("/preflight", handler.PublicCDKPreflight)
-			pubCDK.POST("/redeem", handler.PublicCDKRedeem)
-			pubCDK.GET("/result", handler.PublicCDKResult)
+			pubCDK.POST("/preview", handler.PublicCDKMutationLimit(), handler.PublicCDKPreview)
+			pubCDK.POST("/preflight", handler.PublicCDKMutationLimit(), handler.PublicCDKPreflight)
+			pubCDK.POST("/redeem", handler.PublicCDKMutationLimit(), handler.PublicCDKRedeem)
+			pubCDK.POST("/result", handler.PublicCDKResult)
 			// 刷新进度 / 任务查询：凭卡密反查本站绑定的 redemption_token
-			pubCDK.GET("/result-by-code", handler.PublicCDKResultByCode)
+			pubCDK.POST("/result-by-code", handler.LocalCDKLimit(), handler.PublicCDKResultByCode)
 			// 代理隐藏换码：密码 + 失败未扣款 CDK → 新码
 			pubCDK.POST("/exchange", handler.PublicAgentCDKExchange)
 		}
 
 		// 卡密状态查询：是否已用 + 充值邮箱（不返回 token）
-		lookup := api.Group("/lookup")
+		lookup := api.Group("/lookup", handler.LocalCDKLimit())
 		{
-			lookup.GET("/cdk", handler.LookupCDKStatus)
+			lookup.POST("/cdk", handler.LookupCDKStatus)
 			lookup.POST("/cdk/batch", handler.LookupCDKStatusBatch)
 			// 兼容旧路径
-			lookup.GET("/task", handler.LookupCDKStatus)
+			lookup.POST("/task", handler.LookupCDKStatus)
 		}
 
 		// 卡台 Webhook（须在卡台开发者页配置 https://你的域名/api/v1/webhooks/cardplatform）
 		api.POST("/webhooks/cardplatform", handler.CardPlatformWebhook)
 
+		// Marketplace-only, HMAC-authenticated order binding. This endpoint never
+		// accepts a customer identity, plaintext CDK, credential, or browser cookie.
+		internal := api.Group("/internal")
+		internal.POST("/local-cdk/bind", handler.MarketplaceLocalCDKBind)
+		// Marketplace-only issuer invoice lookup. The HMAC-authenticated caller
+		// receives an upstream URL only after its order is bound to an
+		// authoritative completion; no public endpoint exposes those URLs.
+		internal.POST("/local-cdk/official-invoice", handler.MarketplaceOfficialInvoice)
+
 		// 账单：粘贴 session 查 ChatGPT 订阅 + hosted_invoice（小助手同款）
-		api.POST("/public/billing/check", handler.SessionBillingCheck)
-		api.POST("/billing/check", handler.SessionBillingCheck)
+		api.POST("/public/billing/check", handler.LocalCDKLimit(), handler.SessionBillingCheck)
+		api.POST("/billing/check", handler.LocalCDKLimit(), handler.SessionBillingCheck)
 
 		// Stats routes
 		stats := api.Group("/stats")
@@ -178,6 +229,49 @@ func setupRoutes(r *gin.Engine) {
 		admin.Use(JWTAuthMiddleware())
 		admin.Use(AdminAuthMiddleware())
 		{
+			admin.GET("/operations/health", handler.AdminOperationsHealth)
+			admin.GET("/operations/backups", handler.AdminOperationsBackups)
+			admin.POST("/operations/backups", handler.AdminOperationsBackupCreate)
+			admin.POST("/operations/backups/:name/verify", handler.AdminOperationsBackupVerify)
+			admin.GET("/operations/backups/:name/download", handler.AdminOperationsBackupDownload)
+			admin.GET("/operations/records", handler.OperationsRecordsList)
+			admin.GET("/operations/records/export", handler.OperationsRecordsExport)
+			admin.POST("/operations/customers/search", handler.OperationsCustomersSearch)
+			admin.GET("/operations/records/:id/support", handler.OperationsSupportGet)
+			admin.PUT("/operations/records/:id/support", handler.OperationsSupportSave)
+			admin.GET("/operations/products", handler.OperationsProductsList)
+			admin.POST("/operations/products", handler.OperationsProductsSave)
+			admin.PUT("/operations/products/:id", handler.OperationsProductsSave)
+			admin.GET("/operations/team", handler.AdminTeamList)
+			admin.POST("/operations/team", handler.AdminTeamCreate)
+			admin.PATCH("/operations/team/:id", handler.AdminTeamUpdate)
+			admin.DELETE("/operations/team/:id", handler.AdminTeamDelete)
+			admin.GET("/operations/api-tokens", handler.AdminAPITokens)
+			admin.POST("/operations/api-tokens", handler.AdminCreateAPIToken)
+			admin.DELETE("/operations/api-tokens/:id", handler.AdminRevokeAPIToken)
+			admin.GET("/operations/reply-templates", handler.AdminReplyTemplates)
+			admin.PUT("/operations/reply-templates", handler.AdminSaveReplyTemplates)
+			admin.GET("/local-cdks", handler.LocalCDKList)
+			admin.POST("/local-cdks/search", handler.LocalCDKSearch)
+			admin.GET("/local-cdks/reserve", handler.LocalCodeReserveStatus)
+			admin.GET("/direct-orders", handler.AdminDirectOrders)
+			admin.GET("/automation/settings", handler.AdminAutomationSettings)
+			admin.PUT("/automation/settings", handler.AdminAutomationSave)
+			admin.POST("/automation/pause", handler.AdminAutomationPause)
+			admin.GET("/automation/status", handler.AdminAutomationStatus)
+			admin.GET("/automation/finance", handler.AdminFinance)
+			admin.POST("/automation/finance/review", handler.AdminFinanceReview)
+			admin.GET("/automation/notifications", handler.AdminNotificationSettings)
+			admin.PUT("/automation/notifications", handler.AdminNotificationSave)
+			admin.POST("/automation/notifications/test", handler.AdminNotificationTest)
+			admin.GET("/direct-orders/:id", handler.AdminDirectDetail)
+			admin.POST("/direct-orders/:id/:action", handler.AdminDirectAction)
+			admin.GET("/local-card-choices", handler.LocalCardChoices)
+			admin.POST("/local-cdks", handler.LocalCDKIssue)
+			admin.POST("/local-cdks/:id/disable", handler.LocalCDKDisable)
+			admin.GET("/local-cdk-settings", handler.LocalCDKGetSettings)
+			admin.PUT("/local-cdk-settings", handler.LocalCDKPutSettings)
+			admin.POST("/local-cdks/:id/reconcile", handler.LocalCDKReconcile)
 			// 版本：本机 VERSION + GitHub 最新 release/tag
 			admin.GET("/system/version", handler.AdminSystemVersion)
 			admin.GET("/system/update/status", handler.AdminSystemUpdateStatus)
@@ -231,6 +325,9 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/card-health/unblock", handler.AdminUnblockCard)
 			admin.POST("/card-health/observe", handler.AdminReobserveCardOrder)
 		}
+		integration := api.Group("/integration")
+		integration.GET("/records", handler.IntegrationReadAuth("records:read"), handler.OperationsRecordsList)
+		integration.GET("/products", handler.IntegrationReadAuth("products:read"), handler.OperationsProductsList)
 	}
 
 	// 托管前端 SPA（当设置了 WEB_DIR 时）：真实存在的文件直出，其余回退到 index.html
@@ -251,10 +348,16 @@ func setupRoutes(r *gin.Engine) {
 			if clean != "/" {
 				fp := filepath.Join(webDir, filepath.FromSlash(clean))
 				if st, err := os.Stat(fp); err == nil && !st.IsDir() {
+					if strings.HasPrefix(clean, "/assets/") {
+						c.Header("Cache-Control", "public, max-age=31536000, immutable")
+					} else {
+						c.Header("Cache-Control", "no-cache")
+					}
 					c.File(fp)
 					return
 				}
 			}
+			c.Header("Cache-Control", "no-store")
 			c.File(indexFile)
 		})
 	}

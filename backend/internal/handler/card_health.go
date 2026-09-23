@@ -18,10 +18,10 @@ const cardHealthPolicyKey = "card_health_policy"
 
 // CardFailVerdict 失败归因结论。
 const (
-	verdictNeedMore      = "need_more"       // 未达失败次数
-	verdictEmailSuspect  = "email_suspect"   // 同邮箱反复失败 → 更像号/邮箱问题
-	verdictCardSuspect   = "card_suspect"    // 多邮箱失败 → 更像卡问题
-	verdictUnknownEmails = "unknown_emails"  // 缺邮箱，暂不判卡
+	verdictNeedMore       = "need_more"      // 未达失败次数
+	verdictEmailSuspect   = "email_suspect"  // 同邮箱反复失败 → 更像号/邮箱问题
+	verdictCardSuspect    = "card_suspect"   // 多邮箱失败 → 更像卡问题
+	verdictUnknownEmails  = "unknown_emails" // 缺邮箱，暂不判卡
 	verdictAlreadyBlocked = "already_blocked"
 )
 
@@ -138,7 +138,18 @@ func ObserveCardOrderOutcome(ctx context.Context, in CardOrderObservation) *Card
 	}
 
 	// 先算当前（含本条）趋势：若库内已有同单则 Insert 会 ignore
-	inserted, err := db.InsertCardFailEvent(ev)
+	var inserted bool
+	var err error
+	if strings.TrimSpace(in.RedemptionToken) != "" || strings.TrimSpace(in.AttemptNonce) != "" {
+		var authorized bool
+		inserted, authorized, err = db.InsertCardFailEventForCDKAttempt(ev, in.RedemptionToken, in.AttemptNonce)
+		if err == nil && !authorized {
+			res.Verdict = "stale_attempt"
+			return res
+		}
+	} else {
+		inserted, err = db.InsertCardFailEvent(ev)
+	}
 	if err != nil {
 		log.Printf("[card-health] insert fail event card=%d order=%d: %v", in.CardID, in.OrderID, err)
 		res.Verdict = "error"
@@ -213,6 +224,10 @@ type CardOrderObservation struct {
 	ErrorCode    string
 	Status       string
 	Message      string
+	// RedemptionToken + AttemptNonce are supplied only by public Result
+	// polling. Their conditional DB insert prevents stale-attempt observations.
+	RedemptionToken string
+	AttemptNonce    string
 }
 
 // CardHealthObserveResult 观察结果。
@@ -314,12 +329,36 @@ func observeFromWebhookPayload(payload map[string]interface{}) {
 	}()
 }
 
+func publicResultAttemptIsCurrent(cdkCode, redemptionToken, attemptNonce string) bool {
+	current, err := db.GetBindingByCDK(cdkCode)
+	return err == nil && current != nil &&
+		current.RedemptionToken == redemptionToken &&
+		current.AttemptNonce == attemptNonce
+}
+
 // observeFromPublicResult 兑换 result 轮询时补充观察（webhook 未配也能学）。
-func observeFromPublicResult(ctx context.Context, payload map[string]any, cdkCode string) {
+// The token and nonce checks prevent a slow response from an older attempt
+// from teaching the card-health system after a failed order has already been
+// replaced by a new attempt for the same CDK/provider token.
+func observeFromPublicResult(ctx context.Context, payload map[string]any, cdkCode, redemptionToken, attemptNonce string) {
 	if payload == nil {
 		return
 	}
-	order, _ := payload["order"].(map[string]any)
+	if !publicResultAttemptIsCurrent(cdkCode, redemptionToken, attemptNonce) {
+		return
+	}
+	var order map[string]any
+	if data, ok := payload["data"].(map[string]any); ok {
+		if nested, ok := data["order"].(map[string]any); ok {
+			order = nested
+		}
+	}
+	if order == nil {
+		order, _ = payload["order"].(map[string]any)
+	}
+	if order == nil {
+		order, _ = payload["data"].(map[string]any)
+	}
 	if order == nil {
 		// 扁平结构
 		order = payload
@@ -374,16 +413,26 @@ func observeFromPublicResult(ctx context.Context, payload map[string]any, cdkCod
 	if cardID == 0 {
 		return
 	}
+	// GetCDKOrder above is another network round trip. Recheck immediately
+	// before the first local side effect in case the attempt rotated meanwhile.
+	if !publicResultAttemptIsCurrent(cdkCode, redemptionToken, attemptNonce) {
+		return
+	}
 	email, src := resolveEmailForOrder(cdkCode, emailRaw)
+	if !publicResultAttemptIsCurrent(cdkCode, redemptionToken, attemptNonce) {
+		return
+	}
 	_ = ObserveCardOrderOutcome(ctx, CardOrderObservation{
-		CardID:       cardID,
-		CardLastFour: last4,
-		OrderID:      orderID,
-		CDKCode:      cdkCode,
-		AccountEmail: email,
-		EmailSource:  src,
-		Status:       status,
-		Message:      strAny(order["message"]),
+		CardID:          cardID,
+		CardLastFour:    last4,
+		OrderID:         orderID,
+		CDKCode:         cdkCode,
+		AccountEmail:    email,
+		EmailSource:     src,
+		Status:          status,
+		Message:         strAny(order["message"]),
+		RedemptionToken: redemptionToken,
+		AttemptNonce:    attemptNonce,
 	})
 }
 
@@ -446,9 +495,9 @@ func AdminListCardHealth(c *gin.Context) {
 // AdminUnblockCard POST /api/v1/admin/card-health/unblock
 func AdminUnblockCard(c *gin.Context) {
 	var body struct {
-		CardID      int64  `json:"card_id"`
-		Unfreeze    bool   `json:"unfreeze"`
-		Notes       string `json:"notes"`
+		CardID   int64  `json:"card_id"`
+		Unfreeze bool   `json:"unfreeze"`
+		Notes    string `json:"notes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.CardID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "card_id required"})

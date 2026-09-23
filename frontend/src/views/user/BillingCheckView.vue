@@ -3,10 +3,10 @@
     <div class="max-w-3xl mx-auto px-6 space-y-6">
       <div class="flex items-start justify-between gap-4">
         <div>
-          <router-link to="/" class="app-link mb-4 inline-block text-sm">返回首页</router-link>
-          <h1 class="text-3xl font-bold text-ink">账单查询</h1>
+          <router-link to="/" class="app-link mb-4 inline-block text-sm">{{ t('billingCheck.back') }}</router-link>
+          <h1 class="text-3xl font-bold text-ink">{{ t('billingCheck.title') }}</h1>
           <p class="text-sm text-muted mt-1">
-            支持 <b>卡密</b>（使用兑换时绑定的 session）或直接粘贴 session 查询订阅与账单链接。
+            {{ t('billingCheck.subtitle') }}
           </p>
         </div>
         <div class="flex gap-2">
@@ -23,27 +23,28 @@
             :class="{ 'ring-2 ring-offset-1': mode === 'cdk' }"
             style="--tw-ring-color: var(--primary)"
             @click="mode = 'cdk'"
-          >卡密查询</button>
+          >{{ t('billingCheck.modeCdk') }}</button>
           <button
             type="button"
             class="btn-secondary !py-1.5"
             :class="{ 'ring-2 ring-offset-1': mode === 'session' }"
             style="--tw-ring-color: var(--primary)"
             @click="mode = 'session'"
-          >Session 查询</button>
+          >{{ t('billingCheck.modeSession') }}</button>
         </div>
 
         <template v-if="mode === 'cdk'">
           <div class="rounded-xl bg-soft p-4 text-sm text-muted">
-            输入兑换用的 CDK。系统使用兑换预检时保存的 session 去拉取账单（无需再贴 token）。
-            若从未用 session 完成过兑换，请改用「Session 查询」。
+            {{ t('billingCheck.cdkHint') }}
           </div>
           <div class="form-group">
-            <label>CDK 卡密</label>
+            <label>{{ t('billingCheck.cdkLabel') }}</label>
             <input
               v-model="cdkCode"
               class="input mono"
-              placeholder="SXC-XXXX-XXXX-XXXX-XXXX"
+              :placeholder="t('billingCheck.cdkPlaceholder')"
+              autocomplete="off"
+              spellcheck="false"
               @keyup.enter="query"
             />
           </div>
@@ -51,18 +52,20 @@
 
         <template v-else>
           <div class="rounded-xl bg-soft p-4 text-sm text-muted">
-            打开
+            {{ t('billingCheck.sessionHintBefore') }}
             <a class="app-link underline" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">
               chatgpt.com/api/auth/session
             </a>
-            ，复制<strong>完整 JSON</strong>（须含 sessionToken）。已禁用纯 Access Token。
+            {{ t('billingCheck.sessionHintAfter') }}
           </div>
           <div class="form-group">
-            <label>完整 Session JSON</label>
+            <label>{{ t('billingCheck.sessionLabel') }}</label>
             <textarea
               v-model="tokenInput"
               class="input h-36 font-mono text-xs"
-              placeholder='{"user":{...},"accessToken":"eyJ...","sessionToken":"eyJ..."}'
+              :placeholder="t('billingCheck.sessionPlaceholder')"
+              autocomplete="off"
+              spellcheck="false"
             />
           </div>
         </template>
@@ -73,51 +76,59 @@
           :disabled="loading || !canSubmit"
           @click="query"
         >
-          {{ loading ? '查询中…' : '查询订阅与账单' }}
+          {{ loading ? t('billingCheck.querying') : t('billingCheck.queryBtn') }}
         </button>
       </div>
 
       <div v-if="summary" class="card space-y-3">
         <div class="flex items-center justify-between">
-          <h2 class="text-xl font-semibold text-ink">订阅摘要</h2>
-          <el-tag v-if="authSource" size="small" type="info">{{ authSource === 'cdk' ? '来自卡密绑定' : '来自 session' }}</el-tag>
+          <h2 class="text-xl font-semibold text-ink">{{ t('billingCheck.summaryTitle') }}</h2>
+          <el-tag v-if="resultMode" size="small" type="info">{{ sourceLabel }}</el-tag>
         </div>
         <div class="grid sm:grid-cols-2 gap-2 text-sm">
           <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">方案</span>
+            <span class="text-muted">{{ t('billingCheck.plan') }}</span>
             <b class="text-ink">{{ planLabel }}</b>
           </div>
           <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">有效订阅</span>
-            <b>{{ summary.has_active_subscription ? '是' : '否' }}</b>
+            <span class="text-muted">{{ t('billingCheck.activeSubscription') }}</span>
+            <b>{{ summary.has_active_subscription == null ? '—' : (summary.has_active_subscription ? t('billingCheck.yes') : t('billingCheck.no')) }}</b>
           </div>
           <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">自动续费</span>
-            <b>{{ summary.will_renew == null ? '—' : (summary.will_renew ? '开启' : '已关闭') }}</b>
+            <span class="text-muted">{{ t('billingCheck.autoRenew') }}</span>
+            <b>{{ summary.will_renew == null ? '—' : (summary.will_renew ? t('billingCheck.enabled') : t('billingCheck.disabled')) }}</b>
           </div>
           <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">计费</span>
+            <span class="text-muted">{{ t('billingCheck.billing') }}</span>
             <b class="mono">{{ summary.billing_currency || '—' }} {{ summary.billing_period || '' }}</b>
           </div>
           <div class="flex justify-between gap-2 border-b bd py-2 sm:col-span-2">
-            <span class="text-muted">到期 / 续费</span>
+            <span class="text-muted">{{ t('billingCheck.expiryRenewal') }}</span>
             <b class="mono text-sm">{{ summary.active_until || summary.expires_at || summary.renews_at || '—' }}</b>
+          </div>
+          <div v-if="summary.email" class="flex justify-between gap-2 border-b bd py-2 sm:col-span-2">
+            <span class="text-muted">{{ t('billingCheck.accountEmail') }}</span>
+            <b class="mono text-sm">{{ summary.email }}</b>
+          </div>
+          <div v-if="summary.query_expires_at" class="flex justify-between gap-2 border-b bd py-2 sm:col-span-2">
+            <span class="text-muted">{{ t('billingCheck.queryValidUntil') }}</span>
+            <b class="mono text-sm">{{ new Date(summary.query_expires_at).toLocaleString() }}</b>
           </div>
         </div>
       </div>
 
       <div v-if="invoices" class="card space-y-3">
-        <h2 class="text-xl font-semibold text-ink">付款账单（{{ invoices.length }}）</h2>
-        <p v-if="!invoices.length" class="text-sm text-muted">无付款账单记录。</p>
+        <h2 class="text-xl font-semibold text-ink">{{ t('billingCheck.invoicesTitle', { n: invoices.length }) }}</h2>
+        <p v-if="!invoices.length" class="text-sm text-muted">{{ t('billingCheck.noInvoices') }}</p>
         <div v-for="inv in invoices" :key="inv.id || inv.number" class="rounded-xl bg-soft p-4 text-sm space-y-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <b class="mono">{{ formatAmount(inv.total, inv.currency) }}</b>
-            <span class="text-muted">{{ inv.paid ? '已付' : (inv.status || '未付') }} · {{ formatTs(inv.created) }}</span>
+            <b class="mono">{{ formatAmount(inv.total ?? inv.amount_paid, inv.currency) }}</b>
+            <span class="text-muted">{{ inv.paid ? t('billingCheck.paid') : (inv.status || t('billingCheck.unpaid')) }} · {{ formatTs(inv.created) }}</span>
           </div>
           <div v-if="inv.description" class="text-subtle text-xs">{{ inv.description }}</div>
           <div class="flex gap-3">
-            <a v-if="inv.hosted_invoice_url" class="app-link" :href="inv.hosted_invoice_url" target="_blank" rel="noopener">账单链接</a>
-            <a v-if="inv.invoice_pdf" class="app-link" :href="inv.invoice_pdf" target="_blank" rel="noopener">PDF</a>
+            <a v-if="inv.hosted_invoice_url" class="app-link" :href="inv.hosted_invoice_url" target="_blank" rel="noopener">{{ t('billingCheck.invoiceLink') }}</a>
+            <a v-if="inv.invoice_pdf" class="app-link" :href="inv.invoice_pdf" target="_blank" rel="noopener">{{ t('billingCheck.pdf') }}</a>
           </div>
         </div>
       </div>
@@ -127,11 +138,14 @@
 
 <script setup lang="ts">
 import { computed, ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import LanguageToggle from '../../components/LanguageToggle.vue'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 
 const route = useRoute()
+const router = useRouter()
+const { t } = useI18n({ useScope: 'global' })
 const mode = ref<'cdk' | 'session'>('cdk')
 const cdkCode = ref('')
 const tokenInput = ref('')
@@ -140,6 +154,8 @@ const error = ref('')
 const summary = ref<any>(null)
 const invoices = ref<any[] | null>(null)
 const authSource = ref('')
+const billingProvider = ref('')
+const resultMode = ref<'cdk' | 'session' | ''>('')
 
 const canSubmit = computed(() =>
   mode.value === 'cdk' ? !!cdkCode.value.trim() : !!tokenInput.value.trim(),
@@ -148,8 +164,15 @@ const canSubmit = computed(() =>
 const planLabel = computed(() => {
   const s = summary.value || {}
   const raw = (s.plan_type || s.subscription_plan || '').toString()
-  if (!raw || raw === 'free') return '免费 / 未知'
+  if (!raw || raw === 'free') return t('billingCheck.planUnknown')
   return raw.replace('chatgpt', 'ChatGPT ').replace(/_/g, ' ')
+})
+
+const sourceLabel = computed(() => {
+  const auth = authSource.value.toLowerCase()
+  const provider = billingProvider.value.toLowerCase()
+  const fromCDK = resultMode.value === 'cdk' || auth === 'cdk' || auth === 'accounthub' || provider === 'accounthub'
+  return fromCDK ? t('billingCheck.sourceCdk') : t('billingCheck.sourceSession')
 })
 
 function formatAmount(total: any, currency: any) {
@@ -160,16 +183,23 @@ function formatAmount(total: any, currency: any) {
 }
 function formatTs(v: any) {
   const n = Number(v)
-  if (!Number.isFinite(n) || n <= 0) return '—'
   try {
-    return new Date(n * 1000).toLocaleString()
+    const date = Number.isFinite(n) && n > 0
+      ? new Date(n > 10_000_000_000 ? n : n * 1000)
+      : new Date(String(v || ''))
+    if (Number.isNaN(date.getTime())) return '—'
+    return date.toLocaleString()
   } catch {
-    return String(v)
+    return '—'
   }
 }
 
 onMounted(() => {
-  const qcdk = String(route.query.cdk || '').trim()
+  const remembered = String(sessionStorage.getItem('maple:pending-billing-cdk') || '').trim()
+  if (remembered) sessionStorage.removeItem('maple:pending-billing-cdk')
+  const legacy = String(route.query.cdk || '').trim()
+  const qcdk = remembered || legacy
+  if (legacy) router.replace({ path: route.path })
   if (qcdk) {
     cdkCode.value = qcdk
     mode.value = 'cdk'
@@ -182,7 +212,10 @@ async function query() {
   summary.value = null
   invoices.value = null
   authSource.value = ''
+  billingProvider.value = ''
+  resultMode.value = ''
   loading.value = true
+  const requestedMode = mode.value
   try {
     const body =
       mode.value === 'cdk'
@@ -195,14 +228,18 @@ async function query() {
     })
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
-      error.value = d.error || '查询失败'
+      error.value = r.status === 410
+        ? t('billingCheck.errWindowExpired')
+        : (d.error || d.message || t('billingCheck.errQuery'))
       return
     }
     summary.value = d.summary || {}
     invoices.value = d.invoices || []
     authSource.value = d.auth_source || ''
+    billingProvider.value = d.billing_provider || ''
+    resultMode.value = requestedMode
   } catch (e: any) {
-    error.value = e?.message || '网络错误'
+    error.value = e?.message || t('billingCheck.errNetwork')
   } finally {
     loading.value = false
   }

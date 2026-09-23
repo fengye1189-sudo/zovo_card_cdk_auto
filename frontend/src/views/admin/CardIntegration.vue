@@ -4,12 +4,12 @@
     <div class="card egress-hero">
       <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div class="text-xs uppercase tracking-wide text-muted">本机出口 IP · 卡台白名单</div>
+          <div class="text-sm text-muted">兑换站服务器 IP</div>
           <div class="mt-1 flex flex-wrap items-baseline gap-3">
             <span class="text-3xl font-bold mono text-ink">{{ egressIp || '…' }}</span>
             <el-tag v-if="egressIp" size="small" effect="dark" type="warning">填到卡台 API Key 白名单</el-tag>
           </div>
-          <p class="text-xs text-subtle mt-2">发码/拉价格/余额从此 IP 出网（不是浏览器 IP）</p>
+          <p class="text-sm text-subtle mt-2">用于 Zovo API 白名单，不是手机或电脑的 IP；更换服务器时才需更新。</p>
         </div>
         <div class="flex gap-2">
           <el-button type="primary" :disabled="!egressIp" @click="copyText(egressIp)">复制 IP</el-button>
@@ -22,8 +22,8 @@
     <div class="card space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 class="text-xl font-bold text-ink">卡台接入</h2>
-          <p class="text-sm text-muted mt-1">Base 用站点根；Open API / CDK 路径自动拼接</p>
+          <h2 class="text-xl font-bold text-ink">接入设置</h2>
+          <p class="text-sm text-muted mt-1">连接你的 Zovo 账号。配置完成后通常无需修改；下方可检查连接、余额和服务费。</p>
         </div>
         <div class="flex gap-2">
           <el-tag v-if="hints.card_api_key_configured" type="success" effect="plain">Key 已存</el-tag>
@@ -31,23 +31,10 @@
         </div>
       </div>
 
-      <div class="flex flex-wrap gap-2">
-        <el-button round :type="presetActive === 'prod' ? 'primary' : 'default'" @click="applyPreset('prod')">
-          生产 · zovocard.com
-        </el-button>
-        <el-button round :type="presetActive === 'sandbox' ? 'primary' : 'default'" @click="applyPreset('sandbox')">
-          沙盒 · sandbox
-        </el-button>
-      </div>
-
       <div class="path-chips">
         <div class="path-chip">
           <span class="k">Open API</span>
           <code class="v">{{ resolvedOpenapi }}</code>
-        </div>
-        <div class="path-chip">
-          <span class="k">公开 CDK</span>
-          <code class="v">{{ resolvedCdk }}</code>
         </div>
       </div>
 
@@ -66,40 +53,11 @@
             autocomplete="off"
           />
         </el-form-item>
-        <el-form-item label="代理换码密码">
-          <el-input
-            v-model="secrets.agent_swap_password"
-            type="password"
-            show-password
-            clearable
-            size="large"
-            :placeholder="swapPwHint"
-            autocomplete="off"
-          />
-          <p class="text-xs text-subtle mt-1">
-            代理凭此密码进入隐藏页，将<strong>失败且未扣款</strong>的 CDK 换一张新码。留空保存=不修改；
-            <el-tag v-if="hints.agent_swap_password_configured" size="small" type="success" effect="plain">已设置</el-tag>
-            <el-tag v-else size="small" type="info" effect="plain">未设置</el-tag>
-          </p>
-        </el-form-item>
-        <el-form-item label="发给代理的换码链接（可复制）">
-          <div class="flex flex-wrap items-center gap-2 w-full">
-            <el-input :model-value="agentSwapUrl" readonly size="large" class="!flex-1 mono" />
-            <el-button type="primary" size="large" @click="copyText(agentSwapUrl)">复制链接</el-button>
-            <el-button size="large" @click="window.open(agentSwapUrl, '_blank')">打开</el-button>
-          </div>
-          <p class="text-xs text-subtle mt-1">
-            路径固定 <code class="mono">/partner/swap</code>（短链 <code class="mono">/a/swap</code>）。导航栏不展示，把完整链接 + 密码发给代理即可。
-          </p>
-        </el-form-item>
         <div class="flex flex-wrap gap-2">
           <el-button type="primary" size="large" :loading="saving" @click="save">保存</el-button>
           <el-button type="success" size="large" plain :loading="busy" @click="runAllChecks">
-            一键检测
+            检查连接与余额
           </el-button>
-          <el-button size="large" :loading="pinging" @click="ping">连通</el-button>
-          <el-button size="large" :loading="loadingPlans" @click="loadPlans">价格</el-button>
-          <el-button size="large" :loading="loadingBal" @click="loadBalance">余额</el-button>
         </div>
       </el-form>
     </div>
@@ -126,9 +84,7 @@
     </div>
 
     <div class="flex flex-wrap gap-2">
-      <router-link class="btn-primary" to="/ops/cdkeys">去发码</router-link>
-      <router-link class="btn-secondary" to="/ops/webhooks">Webhook</router-link>
-      <router-link class="btn-secondary" to="/ops/appearance">整站主题</router-link>
+      <router-link class="btn-primary" to="/ops/cdkeys">返回卡密与订单</router-link>
     </div>
 
     <!-- 连通详情弹窗 -->

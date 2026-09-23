@@ -12,6 +12,7 @@ import (
 	"unicode"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/auth"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
@@ -189,6 +190,10 @@ func SetupBootstrap(c *gin.Context) {
 		return
 	}
 
+	if err := auth.InitAdminAccess(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "管理员权限初始化失败，请重试登录"})
+		return
+	}
 	sess, err := issueAdminSession(c, userID, username, "System Admin")
 	if err != nil {
 		log.Printf("setup bootstrap session error: %v", err)
@@ -199,14 +204,16 @@ func SetupBootstrap(c *gin.Context) {
 	setupSucceeded(ip)
 	// 密码仅在本响应返回一次；同时已下发 cookie，前端可直接进后台
 	c.JSON(http.StatusOK, gin.H{
-		"username":   username,
-		"password":   password,
-		"token":      sess["token"],
-		"name":       sess["name"],
-		"expires_at": sess["expires_at"],
-		"csrf_token": sess["csrf_token"],
-		"auto_login": true,
-		"message":    "安装成功。已自动登录；请立即保存密码以备下次使用",
+		"username":    username,
+		"password":    password,
+		"token":       sess["token"],
+		"name":        sess["name"],
+		"expires_at":  sess["expires_at"],
+		"csrf_token":  sess["csrf_token"],
+		"role":        sess["role"],
+		"permissions": sess["permissions"],
+		"auto_login":  true,
+		"message":     "安装成功。已自动登录；请立即保存密码以备下次使用",
 	})
 }
 

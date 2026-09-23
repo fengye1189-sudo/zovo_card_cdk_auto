@@ -30,6 +30,8 @@ function isLocalSessionAuthFailure(url: string, status: number, body: any): bool
 
   const err = String(body?.error || body?.msg || body?.message || '').toLowerCase()
   const code = String(body?.error_code || body?.code || '').toLowerCase()
+  // Role restrictions are an ordinary business response, not an expired login.
+  if (status === 403 && (code === 'permission_denied' || code === 'forbidden')) return false
 
   // 明确卡台/上游错误码
   if (
@@ -54,8 +56,7 @@ function isLocalSessionAuthFailure(url: string, status: number, body: any): bool
     return true
   }
 
-  // 默认：仅对「非卡台」的 401/403 踢登录；403 CSRF 也算会话保护
-  return true
+  return status === 401
 }
 
 export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -79,11 +80,15 @@ export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}
     headers.set('Content-Type', 'application/json')
   }
 
-  const response = await fetch(input, {
+  const controller = new AbortController()
+  const timeout = !init.signal ? setTimeout(() => controller.abort(), 30000) : undefined
+  let response: Response
+  try { response = await fetch(input, {
     ...init,
     headers,
     credentials: 'include',
-  })
+    signal: init.signal || controller.signal,
+  }) } finally { if (timeout) clearTimeout(timeout) }
 
   if (response.status === 401 || response.status === 403) {
     let body: any = null

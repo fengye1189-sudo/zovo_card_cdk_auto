@@ -3,7 +3,7 @@
     <!-- 侧栏 / 细轨（cyber、slate 等） -->
     <aside v-if="layout === 'sidebar' || layout === 'rail'" class="sidenav">
       <div class="side-brand" @click="router.push('/ops')">
-        <span class="brand-icon">{{ layout === 'cyber' || skin === 'cyber' ? '◈' : '🚀' }}</span>
+        <span class="brand-icon">🍁</span>
         <span v-if="layout !== 'rail'" class="brand-text">{{ brand.name || '运营控制台' }}</span>
       </div>
       <nav class="side-pills">
@@ -20,14 +20,6 @@
         </router-link>
       </nav>
       <div class="side-foot">
-        <el-popover placement="right-end" :width="340" trigger="click">
-          <template #reference>
-            <button type="button" class="side-tool" title="主题">
-              <el-icon><Brush /></el-icon>
-            </button>
-          </template>
-          <SkinPicker show-mode title="整站主题" />
-        </el-popover>
         <span v-if="layout !== 'rail'" class="admin-name">{{ auth.username || 'admin' }}</span>
         <el-button v-if="layout !== 'rail'" size="small" @click="doLogout">退出</el-button>
         <el-button v-else size="small" circle @click="doLogout" title="退出">⎋</el-button>
@@ -38,8 +30,9 @@
       <!-- 顶栏：top 布局始终显示；侧栏布局显示精简顶条 -->
       <header v-if="layout === 'top'" class="topnav">
         <div class="nav-inner">
+          <a class="mall-return" href="https://maple1189ai.com/">← 返回主商城</a>
           <div class="brand" @click="router.push('/ops')">
-            <span class="brand-icon">🚀</span>
+            <span class="brand-icon">🍁</span>
             <span class="brand-text">{{ brand.name || '运营控制台' }}</span>
           </div>
           <nav class="nav-pills">
@@ -54,12 +47,6 @@
             </router-link>
           </nav>
           <div class="nav-actions">
-            <el-popover placement="bottom-end" :width="340" trigger="click">
-              <template #reference>
-                <span class="hicon" title="整站主题"><el-icon><Brush /></el-icon></span>
-              </template>
-              <SkinPicker show-mode title="整站主题" />
-            </el-popover>
             <span class="admin-name">{{ auth.username || 'admin' }}</span>
             <el-button size="small" round @click="doLogout">退出</el-button>
           </div>
@@ -68,6 +55,7 @@
 
       <header v-else class="subtop">
         <div class="subtop-inner">
+          <a class="mall-return" href="https://maple1189ai.com/">← 返回主商城</a>
           <div class="subtop-title">{{ currentTitle }}</div>
           <div class="nav-actions">
             <span class="admin-name">{{ auth.username || 'admin' }}</span>
@@ -86,7 +74,6 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { serverLogout } from '../lib/api'
 import { siteBrand, currentSkinMeta, siteSkin } from '../theme'
-import SkinPicker from '../components/SkinPicker.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -97,19 +84,24 @@ const skin = siteSkin
 const layout = computed(() => currentSkinMeta.value.layout)
 const nav = computed(() => currentSkinMeta.value.nav)
 
-const navItems = [
-  { path: '/ops', label: '总览', icon: 'Odometer' },
-  { path: '/ops/cdkeys', label: 'CDK卡密', icon: 'Key' },
-  { path: '/ops/orders', label: '兑换对账', icon: 'Document' },
-  { path: '/ops/integration', label: '卡台接入', icon: 'Link' },
-  { path: '/ops/card-selection', label: '选卡配置', icon: 'CreditCard' },
-  { path: '/ops/webhooks', label: 'Webhook', icon: 'Bell' },
-  { path: '/ops/appearance', label: '外观', icon: 'Brush' },
-  { path: '/ops/audit', label: '审计', icon: 'List' },
-]
+const navItems = computed(() => [
+  { path: '/ops/records', label: '查询与售后', icon: 'Search', permission: 'records.read' },
+  { path: '/ops/customers', label: '客户到期', icon: 'UserFilled', permission: 'records.read' },
+  { path: '/ops/cdkeys', label: '卡密管理', icon: 'Key', permission: 'cdks.issue' },
+  { path: '/ops/products', label: '商品目录', icon: 'Goods', permission: 'catalog.read' },
+  { path: '/ops/orders', label: '卡台订单', icon: 'Document', permission: 'system.manage' },
+  { path: '/ops/automation', label: '自动化', icon: 'Setting', permission: 'system.manage' },
+  { path: '/ops/finance', label: '财务核对', icon: 'Wallet', permission: 'system.manage' },
+  { path: '/ops/health', label: '运行与备份', icon: 'Monitor', permission: 'system.manage' },
+  { path: '/ops/messages', label: '通知与回复', icon: 'Bell', permission: 'records.read' },
+  { path: '/ops/team', label: '团队权限', icon: 'User', permission: 'team.manage' },
+  { path: '/ops/api-access', label: '商城接入', icon: 'Connection', permission: 'system.manage' },
+  { path: '/ops/integration', label: '接入设置', icon: 'Link', permission: 'system.manage' },
+  { path: '/ops/audit', label: '操作日志', icon: 'Tickets', permission: 'system.manage' },
+].filter(item => auth.can(item.permission)))
 
 const currentTitle = computed(() => {
-  const hit = navItems.find((n) => isActive(n.path))
+  const hit = navItems.value.find((n) => isActive(n.path))
   return hit?.label || brand.value.name || '控制台'
 })
 
@@ -133,6 +125,14 @@ async function doLogout() {
   color: var(--ink);
   transition: background-color .3s ease, color .2s ease;
 }
+.mall-return {
+  display: inline-flex; align-items: center; min-height: 44px;
+  padding: 8px 14px; border: 1px solid var(--brd);
+  border-radius: var(--radius-pill, 999px); background: var(--primary-soft);
+  color: var(--primary); font-size: 14px; font-weight: 600;
+  text-decoration: none; white-space: nowrap; flex-shrink: 0;
+}
+.mall-return:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
 .layout-sidebar, .layout-rail {
   flex-direction: row;
   align-items: stretch;
@@ -154,8 +154,8 @@ async function doLogout() {
 }
 .nav-inner {
   max-width: var(--content-max, 1500px); margin: 0 auto;
-  height: var(--nav-height, 60px); padding: 0 20px;
-  display: flex; align-items: center; gap: 14px;
+  min-height: var(--nav-height, 60px); padding: 12px 20px;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
 }
 .brand, .side-brand {
   display: flex; align-items: center; gap: 8px; cursor: pointer; flex-shrink: 0;
@@ -165,7 +165,7 @@ async function doLogout() {
   font-size: 17px; font-weight: 700; color: var(--ink); white-space: nowrap;
   font-family: var(--font-display, var(--font-serif));
 }
-.nav-pills { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; flex: 1; }
+.nav-pills { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; flex: 1; min-width: 0; }
 .pill {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 7px 12px; border-radius: var(--radius-pill, 999px); font-size: 14px;
@@ -253,7 +253,7 @@ async function doLogout() {
   position: sticky; top: 0; z-index: 40;
 }
 .subtop-inner {
-  height: 48px; padding: 0 20px;
+  min-height: 56px; padding: 4px 20px; flex-wrap: wrap; gap: 8px;
   display: flex; align-items: center; justify-content: space-between;
 }
 .subtop-title {
@@ -272,6 +272,11 @@ async function doLogout() {
 }
 
 @media (max-width: 900px) {
+  .nav-inner { gap: 8px; padding: 10px 12px; }
+  .nav-pills { order: 3; flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; padding-bottom: 6px; }
+  .nav-actions { margin-left: auto; }
+  .nav-actions .admin-name { max-width: 125px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .page { padding: 16px 12px; }
   .layout-sidebar .sidenav,
   .layout-rail .sidenav {
     width: 56px;

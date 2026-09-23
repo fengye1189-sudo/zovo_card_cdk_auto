@@ -7,7 +7,7 @@ import (
 
 func TestNormalizeLookupCodes(t *testing.T) {
 	got := normalizeLookupCodes(append(
-		[]string{"sxc-aaaa-bbbb-cccc-dddd", "SXC-AAAA-BBBB-CCCC-DDDD", "ab"},
+		[]string{"sxc-aaaa-bbbb-cccc-dddd", "SXC-AAAA-BBBB-CCCC-DDDD", "ab", "=CMD|CALC", "+SUM(A1)"},
 		splitLookupText("sxc-eeee-ffff-gggg-hhhh\nsxc-iiii-jjjj-kkkk-llll,sxc-eeee-ffff-gggg-hhhh")...,
 	))
 	want := []string{
@@ -26,8 +26,11 @@ func TestApplyLookupFailure(t *testing.T) {
 	if reusable.Status != "failed" || !reusable.CanResubmit || reusable.Used {
 		t.Fatalf("reusable: %+v", reusable)
 	}
-	if reusable.Notes != "Session 无效" {
-		t.Fatalf("notes=%q", reusable.Notes)
+	if reusable.Notes != "" {
+		t.Fatalf("public failure leaked internal notes: %q", reusable.Notes)
+	}
+	if reusable.Message == "" || reusable.Message == "Session 无效" {
+		t.Fatalf("public failure used unsafe message: %q", reusable.Message)
 	}
 
 	locked := cdkLookupResult{CDKCode: "SXC-2"}

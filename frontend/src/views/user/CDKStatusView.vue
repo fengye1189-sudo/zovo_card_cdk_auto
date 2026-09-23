@@ -47,6 +47,8 @@
               type="text"
               :placeholder="t('cdkLookup.cdkPlaceholder')"
               class="input mono"
+              autocomplete="off"
+              spellcheck="false"
               @keyup.enter="query"
             />
           </div>
@@ -137,10 +139,10 @@
           class="alert alert-info mt-6"
         >{{ result.message || t('cdkLookup.msgProcessing') }}</div>
         <div
-          v-else-if="result.status === 'disabled' || result.status === 'expired'"
+          v-else-if="result.status === 'disabled' || result.status === 'expired' || result.status === 'query_expired'"
           class="alert mt-6"
           style="background: var(--warn-soft); color: var(--warn); border-color: var(--warn)"
-        >{{ result.message }}</div>
+        >{{ result.message || (result.status === 'query_expired' ? t('cdkLookup.errWindowExpired') : statusText(result.status)) }}</div>
         <div
           v-else
           class="alert alert-info mt-6"
@@ -272,7 +274,9 @@ const error = ref('')
 const result = ref<CDKStatusResult | null>(null)
 const batchResults = ref<CDKStatusResult[]>([])
 
-const parsedCodes = computed(() => parseCdks(batchText.value))
+const parsedCodes = computed(() => parseCdks(batchText.value).filter((code) =>
+  /^[A-Z0-9][A-Z0-9_-]{3,159}$/i.test(code),
+))
 
 const batchSummary = computed(() => {
   const s = { used: 0, failed: 0, unused: 0, processing: 0, unknown: 0 }
@@ -297,12 +301,13 @@ function statusColor(status: string) {
   if (status === 'failed') return 'var(--err, #dc2626)'
   if (status === 'unused') return 'var(--ink)'
   if (status === 'processing') return 'var(--primary)'
-  if (status === 'disabled' || status === 'expired' || status === 'unknown') return 'var(--warn, #d97706)'
+  if (status === 'disabled' || status === 'expired' || status === 'query_expired' || status === 'unknown') return 'var(--warn, #d97706)'
   return 'var(--ink)'
 }
 
 function goRedeem(code: string) {
-  router.push({ path: '/recharge', query: { cdk: code } })
+  sessionStorage.setItem('maple:pending-redeem-cdk', code)
+  router.push({ path: '/recharge' })
 }
 
 async function query() {
@@ -312,10 +317,16 @@ async function query() {
   error.value = ''
   result.value = null
   try {
-    const r = await fetch(`/api/v1/lookup/cdk?code=${encodeURIComponent(code)}`)
+    const r = await fetch('/api/v1/lookup/cdk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
     const data = await r.json().catch(() => ({}))
     if (!r.ok) {
-      error.value = data.error || data.message || t('cdkLookup.errNotFound')
+      error.value = r.status === 410
+        ? t('cdkLookup.errWindowExpired')
+        : (data.error || data.message || t('cdkLookup.errNotFound'))
       return
     }
     result.value = data as CDKStatusResult
@@ -343,7 +354,9 @@ async function queryBatch() {
     })
     const data = await r.json().catch(() => ({}))
     if (!r.ok) {
-      error.value = data.error || data.message || t('cdkLookup.errNetwork')
+      error.value = r.status === 410
+        ? t('cdkLookup.errWindowExpired')
+        : (data.error || data.message || t('cdkLookup.errNetwork'))
       return
     }
     batchResults.value = Array.isArray(data.results) ? data.results : []
@@ -382,7 +395,11 @@ function exportCsv() {
       row.plan || '',
       row.used_at || '',
       row.message || '',
-    ].map((v) => `"${String(v).replace(/"/g, '""')}"`)
+    ].map((v) => {
+      let text = String(v)
+      if (/^[\t\r\n ]*[=+\-@]/.test(text)) text = `'${text}`
+      return `"${text.replace(/"/g, '""')}"`
+    })
     lines.push(cells.join(','))
   }
   const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' })

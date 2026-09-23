@@ -2,9 +2,9 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href="/maplepass-favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CDK Portal</title>
+    <title>MaplePass 兑换站</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -16,12 +16,7 @@
         try {
           var mode = localStorage.getItem('theme-mode') || 'light'
           var skin = localStorage.getItem('site-skin') || 'terracotta'
-          var dark =
-            mode === 'dark' ||
-            (mode === 'auto' &&
-              window.matchMedia &&
-              window.matchMedia('(prefers-color-scheme: dark)').matches)
-          // preferDark 皮肤默认暗色，减少首屏闪白
+          var dark = mode === 'dark' || (mode === 'auto' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
           if (skin === 'cyber' || skin === 'ember' || skin === 'noir') dark = true
           if (dark) document.documentElement.classList.add('dark')
           document.documentElement.setAttribute('data-skin', skin)

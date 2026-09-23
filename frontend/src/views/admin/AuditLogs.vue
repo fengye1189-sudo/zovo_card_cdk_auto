@@ -11,6 +11,8 @@
         </div>
       </div>
 
+      <p v-if="loadError" class="text-red-700" role="alert">{{ loadError }}</p>
+
       <div class="card overflow-hidden !p-0">
         <div class="overflow-x-auto">
           <table class="data-table">
@@ -61,15 +63,18 @@ interface AuditLog {
 
 const logs = ref<AuditLog[]>([])
 const loading = ref(false)
+const loadError = ref('')
 
 const loadLogs = async () => {
   loading.value = true
+  loadError.value = ''
   try {
     const response = await authFetch('/api/v1/admin/audit-logs?limit=300')
     const data = await response.json()
+    if (!response.ok) throw new Error(data.error || '操作日志读取失败')
     logs.value = data.logs || []
-  } catch (error) {
-    logs.value = []
+  } catch (error: any) {
+    loadError.value = error.message || '操作日志读取失败，请稍后重试'
   }
   loading.value = false
 }

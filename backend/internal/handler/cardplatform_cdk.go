@@ -3,8 +3,11 @@ package handler
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
@@ -78,9 +82,6 @@ func CardPlatformPlans(c *gin.Context) {
 		"base":    cardplatform.LoadConfig().SiteBase,
 		// 展示顺序/文案/性质仍以卡台注册表为准，前端不维护档位清单
 		"registry": sellable,
-		// 付款地区同理：卡台下发什么就能选什么，本站不写死。
-		// 老版本卡台没有这个字段 → 空数组 → 界面只剩「默认(PH)」，即本功能上线前的行为。
-		"payment_regions": plans.PaymentRegions,
 	})
 }
 
@@ -102,11 +103,6 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 		Plan             string `json:"plan"`
 		Count            int    `json:"count"`
 		FundingConfirmed bool   `json:"funding_confirmed"`
-		// PaymentCountry 这批码兑换时用哪个地区付款。空 = 菲律宾（存量行为）。
-		// 不在本站校验取值：卡台的 payment_regions 是唯一真相源，
-		// 这里再校验一遍就等于多了一份会过期的清单。发了不支持的地区，
-		// 卡台会在发码这一步直接拒，错误原样透回给操作者。
-		PaymentCountry string `json:"payment_country"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -166,14 +162,7 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	}
 	// 本站选卡配置 → 发码偏好（跳过未启动卡头；ch1 等历史写法会归一成 one）
 	var issuePrefs []cardplatform.IssueCardPref
-	pref, hasSitePref := issuePrefFromSite()
-	payCountry := strings.ToUpper(strings.TrimSpace(req.PaymentCountry))
-	// ★没有本站选卡配置时也要把地区带上★：地区和选卡偏好是两件独立的事，
-	// 用同一个 pref 结构只是顺路。写成「有选卡配置才传 pref」会让
-	// 「没配选卡、但指定了智利」这种组合静默退回菲律宾——码发出去了，
-	// 区却不对，而且一切正常无报错，直到用户兑换时按 PHP 扣了款才看得出来。
-	if hasSitePref || payCountry != "" {
-		pref.PaymentCountry = payCountry
+	if pref, ok := issuePrefFromSite(); ok {
 		issuePrefs = append(issuePrefs, pref)
 	}
 	var res *cardplatform.IssueCDKResult
@@ -206,11 +195,6 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	prefNote := ""
 	if len(issuePrefs) > 0 {
 		prefNote = " pref=" + issuePrefs[0].Issuer + "/" + issuePrefs[0].SegmentKey
-	}
-	// 地区进审计：这批码按哪个区发的，事后只能从这里查——
-	// 码本身在本站只存码文，地区留在卡台那边。
-	if payCountry != "" {
-		prefNote += " region=" + payCountry
 	}
 	db.WriteAudit(username, "cardplatform_issue_cdk", "plan="+plan+" count="+strconv.Itoa(req.Count)+prefNote, c.ClientIP())
 	// 规范化：保证前端总能拿到完整 code 字段；绝不把 code_prefix 填进 code
@@ -935,15 +919,338 @@ func proxyPublicJSON(c *gin.Context, status int, raw json.RawMessage) {
 	c.Data(status, "application/json; charset=utf-8", raw)
 }
 
+func publicResultString(payload map[string]any, key string) string {
+	// Envelope-level status often only means the HTTP request succeeded. The
+	// actual redemption state belongs to the innermost order and must win.
+	if data, ok := payload["data"].(map[string]any); ok {
+		if order, ok := data["order"].(map[string]any); ok {
+			if value := strAny(order[key]); value != "" {
+				return value
+			}
+		}
+	}
+	if order, ok := payload["order"].(map[string]any); ok {
+		if value := strAny(order[key]); value != "" {
+			return value
+		}
+	}
+	if data, ok := payload["data"].(map[string]any); ok {
+		if value := strAny(data[key]); value != "" {
+			return value
+		}
+	}
+	return strAny(payload[key])
+}
+
+func extractPublicResultEmail(payload map[string]any) string {
+	if email := publicResultString(payload, "account_email"); email != "" {
+		return email
+	}
+	for _, container := range []any{payload["order"], payload["data"]} {
+		if m, ok := container.(map[string]any); ok {
+			if email := strAny(m["account_email"]); email != "" {
+				return email
+			}
+			if order, ok := m["order"].(map[string]any); ok {
+				if email := strAny(order["account_email"]); email != "" {
+					return email
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func extractCredentialEmail(v any) string {
+	credential, ok := v.(map[string]any)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(strAny(credential["email"]))
+}
+
+func safePublicStatus(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "queued", "pending", "processing", "running", "submitted", "review":
+		return strings.ToLower(strings.TrimSpace(raw))
+	case "completed", "success", "done", "paid":
+		return "completed"
+	case "failed", "failed_precharge", "declined", "cancelled", "error":
+		return "failed"
+	default:
+		return "processing"
+	}
+}
+
+func publicResultBool(payload map[string]any, key string) (bool, bool) {
+	if data, ok := payload["data"].(map[string]any); ok {
+		if order, ok := data["order"].(map[string]any); ok {
+			if value, ok := order[key].(bool); ok {
+				return value, true
+			}
+		}
+	}
+	if order, ok := payload["order"].(map[string]any); ok {
+		if value, ok := order[key].(bool); ok {
+			return value, true
+		}
+	}
+	if data, ok := payload["data"].(map[string]any); ok {
+		if value, ok := data[key].(bool); ok {
+			return value, true
+		}
+	}
+	value, ok := payload[key].(bool)
+	return value, ok
+}
+
+func publicResultAllowsRetry(raw json.RawMessage) bool {
+	var payload map[string]any
+	if json.Unmarshal(raw, &payload) != nil || payload == nil {
+		return false
+	}
+	canResubmit, explicit := publicResultBool(payload, "can_resubmit")
+	if !explicit || !canResubmit {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(publicResultString(payload, "status"))) {
+	case "failed", "failed_precharge", "declined", "cancelled", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func safePublicStage(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "queued", "credential_check", "pricing", "checkout", "payment",
+		"subscription", "invoice", "renewal", "reconcile", "completed":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return ""
+	}
+}
+
+func publicResultMessage(status string) string {
+	switch safePublicStatus(status) {
+	case "completed":
+		return "兑换已完成"
+	case "failed":
+		return "本次兑换未完成；如需协助，请联系客服。"
+	default:
+		return "兑换处理中，请稍后查询。"
+	}
+}
+
+func safePublicEventStep(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "queued", "credential_check", "pricing", "checkout", "payment",
+		"subscription", "invoice", "renewal", "reconcile", "completed":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func safePublicEventCategory(value, status string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "success", "completed":
+		return "success"
+	case "failed", "error":
+		return "error"
+	case "warning":
+		return "warning"
+	case "info", "pending":
+		return "info"
+	}
+	switch safePublicStatus(status) {
+	case "completed":
+		return "success"
+	case "failed":
+		return "error"
+	default:
+		return "info"
+	}
+}
+
+func publicEventMessage(step, status string) string {
+	if safePublicStatus(status) == "failed" {
+		return "该步骤未完成；如需协助，请联系客服。"
+	}
+	if safePublicStatus(status) == "completed" || step == "completed" {
+		return "该步骤已完成。"
+	}
+	switch step {
+	case "queued":
+		return "订单已受理。"
+	case "credential_check":
+		return "账号信息已核验。"
+	case "pricing":
+		return "正在确认订单金额。"
+	case "checkout":
+		return "正在准备支付。"
+	case "payment":
+		return "正在确认支付结果。"
+	case "subscription":
+		return "正在确认订阅状态。"
+	case "invoice":
+		return "正在核对本次账单。"
+	case "renewal":
+		return "正在处理续费。"
+	case "reconcile":
+		return "正在核对处理结果。"
+	default:
+		return "订单处理中。"
+	}
+}
+
+// safePublicResultPayload is an allowlist. Public polling never receives the
+// upstream token, raw provider identifiers, card details or internal notes.
+func safePublicResultPayload(payload map[string]any) map[string]any {
+	status := safePublicStatus(publicResultString(payload, "status"))
+	stage := safePublicStage(publicResultString(payload, "stage"))
+	out := map[string]any{
+		"status":  status,
+		"message": publicResultMessage(status),
+	}
+	if stage != "" {
+		out["stage"] = stage
+	}
+
+	var order map[string]any
+	if data, ok := payload["data"].(map[string]any); ok {
+		if candidate, ok := data["order"].(map[string]any); ok {
+			order = candidate
+		} else if _, hasTopOrder := payload["order"].(map[string]any); !hasTopOrder {
+			order = data
+		}
+	}
+	if order == nil {
+		if candidate, ok := payload["order"].(map[string]any); ok {
+			order = candidate
+		}
+	}
+	if order != nil {
+		safeOrder := map[string]any{}
+		safeOrder["status"] = status
+		if stage != "" {
+			safeOrder["stage"] = stage
+		}
+		if plan := strAny(order["plan"]); plan != "" && len(plan) <= 64 {
+			safeOrder["plan"] = plan
+		}
+		for _, key := range []string{"created_at", "updated_at", "completed_at"} {
+			switch value := order[key].(type) {
+			case string:
+				if len(value) <= 64 {
+					safeOrder[key] = value
+				}
+			case float64, int64, int:
+				safeOrder[key] = value
+			}
+		}
+		if email := maskEmail(strAny(order["account_email"])); email != "" {
+			safeOrder["account_email"] = email
+		}
+		if len(safeOrder) > 0 {
+			out["order"] = safeOrder
+		}
+	}
+	if email := maskEmail(extractPublicResultEmail(payload)); email != "" {
+		out["account_email"] = email
+	}
+
+	var rawEvents []any
+	if events, ok := payload["events"].([]any); ok {
+		rawEvents = events
+	} else if data, ok := payload["data"].(map[string]any); ok {
+		if events, ok := data["events"].([]any); ok {
+			rawEvents = events
+		}
+	}
+	if len(rawEvents) > 0 {
+		events := make([]map[string]any, 0, len(rawEvents))
+		for _, item := range rawEvents {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			step := safePublicEventStep(strAny(m["step"]))
+			if step == "" {
+				// An event with only a timestamp is not useful to the customer and
+				// must not become an empty row in the public progress timeline.
+				continue
+			}
+			rawStatus := strAny(m["to_status"])
+			if rawStatus == "" {
+				rawStatus = strAny(m["status"])
+			}
+			safeStatus := safePublicStatus(rawStatus)
+			safeEvent := map[string]any{
+				"step":           step,
+				"category":       safePublicEventCategory(strAny(m["category"]), rawStatus),
+				"to_status":      safeStatus,
+				"public_message": publicEventMessage(step, rawStatus),
+			}
+			switch created := m["created_at"].(type) {
+			case string:
+				if len(created) <= 64 {
+					safeEvent["created_at"] = created
+				}
+			case float64, int64, int:
+				safeEvent["created_at"] = created
+			}
+			if len(safeEvent) > 0 {
+				events = append(events, safeEvent)
+			}
+		}
+		if len(events) > 0 {
+			out["events"] = events
+		}
+	}
+	return out
+}
+
 // PublicCDKPreview POST /api/v1/public/cdk/preview
 func PublicCDKPreview(c *gin.Context) {
+	privateNoStore(c)
 	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	if !localBody(c, &body) {
 		return
 	}
-	code := str(body["code"])
+	code := normalizePublicCDK(str(body["code"]))
+	if !validPublicCDK(code) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "卡密格式无效"})
+		return
+	}
+	// Capture the local state before the network request. The successful
+	// upstream response may only be persisted if no concurrent redeem or newer
+	// preview changed this exact binding in the meantime.
+	snapshot, err := db.GetBindingByCDK(code)
+	if err != nil {
+		log.Printf("[cdk-preview] binding snapshot failed: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法安全验证卡密，请稍后重试。"})
+		return
+	}
 	cli := cardplatform.NewFromSettings()
+	allowFailedRetry := false
+	nowUnix := time.Now().UTC().Unix()
+	if snapshot != nil && (snapshot.QueryStartedAt > 0 || snapshot.QueryExpiresAt > 0) &&
+		(snapshot.QueryExpiresAt <= 0 || nowUnix < snapshot.QueryExpiresAt) {
+		// An active attempt may be replaced only after the current token proves
+		// that its upstream order is terminally failed. Processing, successful,
+		// unknown and unavailable states remain locked against duplicate payment.
+		if strings.TrimSpace(snapshot.RedemptionToken) == "" {
+			c.JSON(http.StatusConflict, gin.H{"error": "该卡密已有处理中记录，请使用卡密查询查看进度。"})
+			return
+		}
+		resultStatus, resultRaw, resultErr := cli.Result(c.Request.Context(), snapshot.RedemptionToken, deviceFrom(c))
+		if resultErr != nil || resultStatus < 200 || resultStatus >= 300 || !publicResultAllowsRetry(resultRaw) {
+			c.JSON(http.StatusConflict, gin.H{"error": "该卡密已提交兑换；仅在确认本次失败后才能重新验证，请先使用卡密查询。"})
+			return
+		}
+		allowFailedRetry = true
+	}
 	st, raw, err := cli.Preview(c.Request.Context(), code, deviceFrom(c))
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -951,12 +1258,40 @@ func PublicCDKPreview(c *gin.Context) {
 	}
 	// 成功时记下 code ↔ redemption_token，供后续绑定 session / 账单查卡密
 	if st >= 200 && st < 300 {
-		if tok := extractJSONString(raw, "redemption_token", "token"); tok != "" {
-			_ = db.BindCDKRedemptionToken(code, tok)
+		tok := extractJSONString(raw, "redemption_token", "token")
+		if tok == "" {
+			tok = extractJSONNestedString(raw, "data", "redemption_token")
 		}
-		// 嵌套 data
-		if tok := extractJSONNestedString(raw, "data", "redemption_token"); tok != "" {
-			_ = db.BindCDKRedemptionToken(code, tok)
+		if tok == "" {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "验证服务未返回安全查询凭证，请稍后重试。"})
+			return
+		}
+		var attemptToken string
+		var persistErr error
+		if allowFailedRetry {
+			attemptToken, persistErr = db.BindCDKRedemptionTokenCASForFailedRetryWithAttempt(code, tok, snapshot)
+		} else {
+			attemptToken, persistErr = db.BindCDKRedemptionTokenCASWithAttempt(code, tok, snapshot)
+		}
+		if persistErr != nil {
+			log.Printf("[cdk-preview] binding persistence failed: %v", persistErr)
+			if errors.Is(persistErr, db.ErrCDKBindingChanged) || errors.Is(persistErr, db.ErrCDKQueryAlreadyStarted) {
+				c.JSON(http.StatusConflict, gin.H{"error": "卡密状态已变化，请重新验证；本次未提交付款。"})
+			} else {
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法安全保存兑换进度，本次未提交付款，请稍后重试。"})
+			}
+			return
+		}
+		var previewPayload map[string]any
+		if json.Unmarshal(raw, &previewPayload) != nil || previewPayload == nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "验证服务返回格式异常，请稍后重试。"})
+			return
+		}
+		previewPayload["attempt_token"] = attemptToken
+		raw, err = json.Marshal(previewPayload)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法生成安全兑换凭证，请稍后重试。"})
+			return
 		}
 	}
 	proxyPublicJSON(c, st, raw)
@@ -964,169 +1299,325 @@ func PublicCDKPreview(c *gin.Context) {
 
 // PublicCDKPreflight POST /api/v1/public/cdk/preflight
 func PublicCDKPreflight(c *gin.Context) {
+	privateNoStore(c)
 	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	if !localBody(c, &body) {
 		return
 	}
+	tok := strings.TrimSpace(str(body["redemption_token"]))
+	attemptToken := strings.TrimSpace(str(body["attempt_token"]))
+	if tok == "" || len(tok) > 512 || attemptToken == "" || len(attemptToken) > 128 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "兑换凭证无效，请重新验证卡密；本次未提交付款。"})
+		return
+	}
+	// Validate the immutable preview identity before contacting the upstream
+	// service. An old token, a token for another CDK, or an already-submitted
+	// redemption must never be able to replace credentials or renew retention.
+	binding, err := db.GetCDKPreflightBindingByToken(tok, time.Now())
+	if err != nil {
+		switch {
+		case errors.Is(err, db.ErrCDKPreflightExpired), errors.Is(err, db.ErrCDKQueryExpired):
+			c.JSON(http.StatusGone, gin.H{"error": "本次验证已过期，请重新验证卡密；本次未提交付款。"})
+		case errors.Is(err, db.ErrCDKQueryAlreadyStarted):
+			c.JSON(http.StatusConflict, gin.H{"error": "该卡密已提交兑换，请使用卡密查询查看处理进度。"})
+		case errors.Is(err, sql.ErrNoRows):
+			c.JSON(http.StatusConflict, gin.H{"error": "兑换凭证已失效，请重新验证卡密；本次未提交付款。"})
+		default:
+			log.Printf("[cdk-preflight] preview validation failed tok=%s: %v", shortTok(tok), err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法安全核验兑换凭证，本次未提交付款，请稍后重试。"})
+		}
+		return
+	}
+	if binding == nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "兑换凭证已失效，请重新验证卡密；本次未提交付款。"})
+		return
+	}
+	if binding.AttemptNonce != attemptToken {
+		c.JSON(http.StatusConflict, gin.H{"error": "本次验证已被新的操作替换，请重新验证卡密；本次未提交付款。"})
+		return
+	}
+	requestedCode := normalizePublicCDK(str(body["code"]))
+	if requestedCode != "" && (!validPublicCDK(requestedCode) || requestedCode != binding.CDKCode) {
+		c.JSON(http.StatusConflict, gin.H{"error": "卡密与兑换凭证不匹配，请重新验证卡密；本次未提交付款。"})
+		return
+	}
+	body["code"] = binding.CDKCode
+	body["redemption_token"] = tok
+	delete(body, "attempt_token")
+	if err := db.CheckCDKPreflightGrantCapacity(attemptToken); err != nil {
+		if errors.Is(err, db.ErrCDKPreflightLimit) {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "本次验证账号次数过多，请重新验证卡密后再试；本次未提交付款。"})
+		} else {
+			log.Printf("[cdk-preflight] capacity check failed tok=%s: %v", shortTok(tok), err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法安全核验预检次数，本次未提交付款，请稍后重试。"})
+		}
+		return
+	}
+
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Preflight(c.Request.Context(), body, deviceFrom(c))
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	// 预检成功：把 credential.session 绑到卡密（账单页可凭卡密查）
-	// 即便上游返回非 2xx，只要本地能解析到 session 也尽量落库，方便后续账单查询。
-	tok := str(body["redemption_token"])
-	if tok == "" {
-		tok = extractJSONString(raw, "redemption_token", "token")
-	}
-	code := str(body["code"])
-	if code == "" {
-		if found, err := db.FindCodeByRedemptionToken(tok); err == nil && found != "" {
-			code = found
+	// Preflight is intentionally not persisted as billing identity. Multiple
+	// account checks may race within one attempt; only the account returned by
+	// the single claimed redeem/result is authoritative.
+	if st >= 200 && st < 300 {
+		preflightToken := extractJSONString(raw, "preflight_token")
+		if preflightToken == "" {
+			preflightToken = extractJSONNestedString(raw, "data", "preflight_token")
 		}
-	}
-	sess := extractCredentialSession(body["credential"])
-	if sess != "" && (code != "" || tok != "") {
-		if err := db.BindCDKSession(code, tok, sess); err != nil {
-			log.Printf("[cdk-preflight] bind session failed code=%s tok=%s: %v", code, shortTok(tok), err)
+		if preflightToken == "" {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "预检服务未返回安全提交凭证，请重新预检。"})
+			return
 		}
-	} else if st >= 200 && st < 300 {
-		log.Printf("[cdk-preflight] no session to bind (mode may be mailbox) tok=%s", shortTok(tok))
+		if err := db.RegisterCDKPreflightGrant(binding.CDKCode, tok, attemptToken, preflightToken, time.Now()); err != nil {
+			log.Printf("[cdk-preflight] grant persistence failed tok=%s: %v", shortTok(tok), err)
+			switch {
+			case errors.Is(err, db.ErrCDKPreflightExpired), errors.Is(err, db.ErrCDKQueryExpired):
+				c.JSON(http.StatusGone, gin.H{"error": "本次验证已过期，请重新验证卡密；本次未提交付款。"})
+			case errors.Is(err, db.ErrCDKBindingMismatch), errors.Is(err, db.ErrCDKBindingChanged),
+				errors.Is(err, db.ErrCDKQueryAlreadyStarted), errors.Is(err, sql.ErrNoRows):
+				c.JSON(http.StatusConflict, gin.H{"error": "本次验证已被新的操作替换，请重新验证卡密；本次未提交付款。"})
+			default:
+				c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法安全保存预检结果，本次未提交付款，请稍后重试。"})
+			}
+			return
+		}
 	}
 	proxyPublicJSON(c, st, raw)
 }
 
 // PublicCDKRedeem POST /api/v1/public/cdk/redeem
 func PublicCDKRedeem(c *gin.Context) {
+	privateNoStore(c)
+	// Frontends may only offer a direct retry when the server explicitly proves
+	// this request never crossed the one-way submit latch. Once claimed (or when
+	// another request already claimed it), every error becomes read-only polling.
+	c.Header("X-Maple-Submit-State", "not-submitted")
 	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	if !localBody(c, &body) {
 		return
 	}
-	// 有选卡配置就向卡台声明 strict，避免被卡台自己的 537872/星链级联盖过。
-	injectRedeemCardPolicy(body)
-	// 本站坏卡黑名单 → 本单排除这些卡：CDK 走 CDK 自己的选卡规则。实时读黑名单、纯选卡维度
-	// 排除,卡台不冻结这些卡(卡台直充用户依旧可用)。拉黑即时生效,无需固化/对账。
-	if _, exists := body["exclude_card_ids"]; !exists {
-		if ids, err := db.ListActiveBlockedCardIDs(); err == nil && len(ids) > 0 {
-			body["exclude_card_ids"] = ids
-		}
+	// This is the first actual submit action. The atomic DB update only fills
+	// an empty window and consumes a one-way latch, so concurrent/replayed
+	// requests can never call the upstream redeem endpoint twice.
+	tok := strings.TrimSpace(str(body["redemption_token"]))
+	attemptToken := strings.TrimSpace(str(body["attempt_token"]))
+	preflightToken := strings.TrimSpace(str(body["preflight_token"]))
+	if tok == "" || attemptToken == "" || len(attemptToken) > 128 ||
+		preflightToken == "" || len(preflightToken) > 2048 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "兑换凭证无效，请重新验证卡密；本次未提交付款。"})
+		return
 	}
+	// Read and validate every server-owned card-safety input before consuming
+	// the one-way submit latch. If the local policy/selection/blocklist storage
+	// is unavailable, the customer can safely retry and no upstream payment can
+	// have been submitted without those protections.
+	policySnapshot, err := loadPublicRedeemPolicySnapshot()
+	if err != nil {
+		log.Printf("[cdk-redeem] card safety snapshot failed tok=%s: %v", shortTok(tok), err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法安全读取选卡保护，本次未提交付款，请稍后重试。"})
+		return
+	}
+	// From this point until Claim returns a classified result, the database
+	// outcome is deliberately treated as unknown. A transport/storage error
+	// must never invite the browser to submit the same purchase again.
+	c.Header("X-Maple-Submit-State", "unknown")
+	if err := db.ClaimCDKRedemptionAttempt(tok, attemptToken, preflightToken, time.Now()); err != nil {
+		log.Printf("[cdk-redeem] submit claim failed tok=%s: %v", shortTok(tok), err)
+		switch {
+		case errors.Is(err, db.ErrCDKPreflightExpired):
+			c.Header("X-Maple-Submit-State", "not-submitted")
+			c.JSON(http.StatusGone, gin.H{"error": "本次验证已超过 24 小时，请重新验证卡密；本次未提交付款。"})
+		case errors.Is(err, db.ErrCDKQueryExpired):
+			c.Header("X-Maple-Submit-State", "not-submitted")
+			c.JSON(http.StatusGone, gin.H{"error": "该卡密的 7 天查询期已结束，不能再次提交兑换。"})
+		case errors.Is(err, db.ErrCDKSubmitAlreadyClaimed):
+			c.Header("X-Maple-Submit-State", "submitted")
+			c.JSON(http.StatusConflict, gin.H{"error": "本次兑换已提交，请使用卡密查询查看处理进度。"})
+		case errors.Is(err, db.ErrCDKBindingMismatch), errors.Is(err, db.ErrCDKBindingChanged):
+			c.Header("X-Maple-Submit-State", "not-submitted")
+			c.JSON(http.StatusConflict, gin.H{"error": "本次验证已被新的操作替换，请重新验证卡密；本次未重复提交。"})
+		case errors.Is(err, sql.ErrNoRows):
+			c.Header("X-Maple-Submit-State", "not-submitted")
+			c.JSON(http.StatusConflict, gin.H{"error": "兑换凭证已失效，请重新验证卡密；本次未提交付款。"})
+		default:
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "提交状态暂时无法确认，请勿重复提交；请稍后使用原始卡密查询处理进度。"})
+		}
+		return
+	}
+	c.Header("X-Maple-Submit-State", "submitted")
+	// The public caller owns no card-selection or idempotency fields. Rebuild an
+	// allowlisted upstream request after the claim so malicious policy overrides,
+	// arbitrary card IDs and colliding client_request_id values cannot cross the
+	// BFF boundary. The deterministic ID is unique to this server-issued attempt.
+	requestHash := sha256.Sum256([]byte(attemptToken))
+	body = map[string]any{
+		"redemption_token":  tok,
+		"preflight_token":   preflightToken,
+		"client_request_id": "maple-cdk-" + hex.EncodeToString(requestHash[:])[:24],
+	}
+	// Use only the validated pre-claim snapshot from this point onward. There
+	// are deliberately no DB reads between the claim and the upstream submit.
+	applyPublicRedeemPolicySnapshot(body, policySnapshot)
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Redeem(c.Request.Context(), body, deviceFrom(c))
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	proxyPublicJSON(c, st, raw)
-}
-
-// PublicCDKResult GET /api/v1/public/cdk/result?token=
-func PublicCDKResult(c *gin.Context) {
-	token := strings.TrimSpace(c.Query("token"))
-	if token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
-		return
-	}
-	cli := cardplatform.NewFromSettings()
-	st, raw, err := cli.Result(c.Request.Context(), token, deviceFrom(c))
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-	// 卡健康观察（best-effort，不阻断用户）
 	if st >= 200 && st < 300 {
 		var payload map[string]any
-		if json.Unmarshal(raw, &payload) == nil {
-			cdkCode := ""
-			if found, err := db.FindCodeByRedemptionToken(token); err == nil {
-				cdkCode = found
+		if json.Unmarshal(raw, &payload) == nil && payload != nil {
+			if email := extractPublicResultEmail(payload); email != "" {
+				if binding, bindErr := db.GetPublicCDKBindingByToken(tok, time.Now()); bindErr == nil &&
+					binding != nil && binding.AttemptNonce == attemptToken {
+					_ = db.BindCDKAccountEmailForAttempt(binding.CDKCode, tok, attemptToken, email)
+				}
 			}
-			go observeFromPublicResult(context.Background(), payload, cdkCode)
 		}
 	}
 	proxyPublicJSON(c, st, raw)
 }
 
-// PublicCDKResultByCode GET /api/v1/public/cdk/result-by-code?code=
-// 用卡密反查本站绑定的 redemption_token，再转发卡台 result（刷新进度 / 任务查询用）
-func PublicCDKResultByCode(c *gin.Context) {
-	code := strings.TrimSpace(c.Query("code"))
-	if code == "" {
-		code = strings.TrimSpace(c.Query("cdk_code"))
+func publicCDKBindingError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, db.ErrCDKQueryExpired):
+		c.JSON(http.StatusGone, gin.H{"error": "7 天查询期已结束；如需售后，请联系客服。", "status": "query_expired"})
+		return true
+	case errors.Is(err, db.ErrCDKQueryNotStarted):
+		c.JSON(http.StatusNotFound, gin.H{"error": "未找到已提交的兑换记录。"})
+		return true
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询暂时不可用"})
+		return true
+	default:
+		return false
 	}
-	if code == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "code required"})
-		return
-	}
-	bind, err := db.GetBindingByCDK(code)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询绑定失败"})
-		return
-	}
+}
+
+func servePublicCDKResult(c *gin.Context, bind *db.CDKBinding) {
 	if bind == nil || strings.TrimSpace(bind.RedemptionToken) == "" {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error": "未找到该卡密的兑换记录。请确认卡密正确；若刚在本机兑换过，请用同一浏览器打开兑换页（进度会自动恢复）。",
-		})
+		c.JSON(http.StatusNotFound, gin.H{"error": "未找到已提交的兑换记录。"})
 		return
 	}
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Result(c.Request.Context(), bind.RedemptionToken, deviceFrom(c))
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "订单状态暂时不可用，请稍后重试。"})
 		return
 	}
-	// 附带本站元信息，前端可恢复轮询 token
 	var payload map[string]any
 	if json.Unmarshal(raw, &payload) != nil || payload == nil {
-		proxyPublicJSON(c, st, raw)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "订单状态暂时不可用，请稍后重试。"})
 		return
 	}
-	payload["cdk_code"] = bind.CDKCode
-	payload["redemption_token"] = bind.RedemptionToken
-	payload["has_session_binding"] = strings.TrimSpace(bind.SessionPayload) != ""
-
-	// 卡健康观察（webhook 未配时靠轮询学）
+	// Result is a network round trip. Revalidate the exact local attempt before
+	// exposing any upstream data, because a provider token may be reused after a
+	// failed retry or expiry while this request is in flight.
+	current, currentErr := db.GetPublicCDKBindingByCode(bind.CDKCode, time.Now())
+	if publicCDKBindingError(c, currentErr) {
+		return
+	}
+	if current == nil || current.CDKCode != bind.CDKCode ||
+		current.RedemptionToken != bind.RedemptionToken ||
+		current.AttemptNonce != bind.AttemptNonce {
+		c.JSON(http.StatusConflict, gin.H{"error": "兑换记录状态已变化，请重新使用原始卡密查询。"})
+		return
+	}
+	bind = current
 	if st >= 200 && st < 300 {
-		go observeFromPublicResult(context.Background(), payload, bind.CDKCode)
+		go observeFromPublicResult(context.Background(), payload, bind.CDKCode, bind.RedemptionToken, bind.AttemptNonce)
+		if email := extractPublicResultEmail(payload); email != "" {
+			_ = db.BindCDKAccountEmailForAttempt(bind.CDKCode, bind.RedemptionToken, bind.AttemptNonce, email)
+		}
 	}
+	safe := safePublicResultPayload(payload)
+	if st >= 400 {
+		safe["status"] = "failed"
+		safe["message"] = publicResultMessage("failed")
+	}
+	safe["query_expires_at"] = time.Unix(bind.QueryExpiresAt, 0).UTC().Format(time.RFC3339)
+	safe["query_window_days"] = 7
+	c.JSON(st, safe)
+}
 
-	// 已完成的订单：从 accounthub 获取账单 URL
-	orderStatus := strAny(payload["status"])
-	if orderStatus == "" {
-		if order, ok := payload["order"].(map[string]any); ok {
-			orderStatus = strAny(order["status"])
-		}
+// PublicCDKResult POST /api/v1/public/cdk/result
+func PublicCDKResult(c *gin.Context) {
+	privateNoStore(c)
+	var req struct {
+		Token           string `json:"token"`
+		RedemptionToken string `json:"redemption_token"`
+		AttemptToken    string `json:"attempt_token"`
+		AttemptNonce    string `json:"attempt_nonce"`
 	}
-	if orderStatus == "completed" {
-		email := ""
-		if order, ok := payload["order"].(map[string]any); ok {
-			email = strAny(order["account_email"])
-		}
-		if email == "" {
-			email = strAny(payload["account_email"])
-		}
-		if email == "" && strings.TrimSpace(bind.SessionPayload) != "" {
-			email = extractEmailFromSession(bind.SessionPayload)
-		}
-		if email != "" {
-			if inv, err := queryAccounthubInvoices(email); err == nil {
-				payload["invoice_url"] = inv.InvoiceURL
-			}
-		}
+	if !localBody(c, &req) {
+		return
 	}
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
+		token = strings.TrimSpace(req.RedemptionToken)
+	}
+	if token == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+	attemptToken := strings.TrimSpace(req.AttemptToken)
+	if attemptToken == "" {
+		attemptToken = strings.TrimSpace(req.AttemptNonce)
+	}
+	if attemptToken == "" || len(attemptToken) > 128 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "attempt_token required；旧页面请改用原始卡密查询。"})
+		return
+	}
+	bind, err := db.GetPublicCDKBindingByToken(token, time.Now())
+	if publicCDKBindingError(c, err) {
+		return
+	}
+	if bind == nil || bind.AttemptNonce != attemptToken {
+		c.JSON(http.StatusNotFound, gin.H{"error": "未找到与本次验证匹配的兑换记录，请改用原始卡密查询。"})
+		return
+	}
+	servePublicCDKResult(c, bind)
+}
 
-	c.JSON(st, payload)
+// PublicCDKResultByCode POST /api/v1/public/cdk/result-by-code
+// 用卡密反查本站绑定的 redemption_token，再转发卡台 result（刷新进度 / 任务查询用）
+func PublicCDKResultByCode(c *gin.Context) {
+	privateNoStore(c)
+	var req struct {
+		Code    string `json:"code"`
+		CDKCode string `json:"cdk_code"`
+	}
+	if !localBody(c, &req) {
+		return
+	}
+	code := normalizePublicCDK(req.Code)
+	if code == "" {
+		code = normalizePublicCDK(req.CDKCode)
+	}
+	if !validPublicCDK(code) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "code required"})
+		return
+	}
+	bind, err := db.GetPublicCDKBindingByCode(code, time.Now())
+	if publicCDKBindingError(c, err) {
+		return
+	}
+	servePublicCDKResult(c, bind)
 }
 
 func shortTok(tok string) string {
 	tok = strings.TrimSpace(tok)
-	if len(tok) <= 12 {
-		return tok
+	if tok == "" {
+		return "empty"
 	}
-	return tok[:8] + "…"
+	sum := sha256.Sum256([]byte(tok))
+	// A stable hash prefix is enough for correlating server logs without ever
+	// writing any portion of the private redemption token itself.
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // PublicCDKPlans GET /api/v1/public/cdk/plans

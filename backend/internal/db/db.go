@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
@@ -8,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +22,9 @@ import (
 )
 
 var DB *sql.DB
+
+// ErrSSONonceUsed is returned when a signed marketplace handoff is replayed.
+var ErrSSONonceUsed = errors.New("marketplace sso nonce already used")
 
 const (
 	DefaultAdminUsername = "admin"
@@ -35,7 +40,13 @@ func Init(cfg *config.DatabaseConfig) error {
 		dbPath = p
 	}
 	log.Printf("使用数据库: %s", dbPath)
-	db, err := sql.Open("sqlite3", dbPath)
+	// Every pooled connection waits for short concurrent writes instead of
+	// returning SQLITE_BUSY during settings saves or background reconciliation.
+	separator := "?"
+	if strings.Contains(dbPath, "?") {
+		separator = "&"
+	}
+	db, err := sql.Open("sqlite3", dbPath+separator+"_busy_timeout=10000&_journal_mode=WAL&_synchronous=NORMAL")
 	if err != nil {
 		return err
 	}
@@ -107,6 +118,7 @@ func createTables() error {
 			FOREIGN KEY(cdk_code) REFERENCES cd_keys(code)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_cdk ON recharge_tasks(cdk_code)`,
+		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_cdk_norm ON recharge_tasks(UPPER(TRIM(cdk_code)))`,
 		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_task_id ON recharge_tasks(task_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_status ON recharge_tasks(task_status)`,
 
@@ -146,6 +158,14 @@ func createTables() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_created ON admin_audit_logs(created_at)`,
 
+		// 单次商城后台跳转令牌；验签后立即写入，防止 90 秒有效期内被重放。
+		`CREATE TABLE IF NOT EXISTS marketplace_sso_nonces (
+			jti TEXT PRIMARY KEY,
+			expires_at INTEGER NOT NULL,
+			used_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_marketplace_sso_expiry ON marketplace_sso_nonces(expires_at)`,
+
 		// 站点配置 key-value（品牌/皮肤/安装锁/加密密钥元数据等）
 		`CREATE TABLE IF NOT EXISTS site_settings (
 			key TEXT PRIMARY KEY,
@@ -168,9 +188,24 @@ func createTables() error {
 			cdk_code TEXT PRIMARY KEY,
 			session_payload TEXT NOT NULL,
 			redemption_token TEXT,
+			account_email TEXT NOT NULL DEFAULT '',
+			attempt_nonce TEXT NOT NULL DEFAULT '',
+			submit_claimed_at INTEGER NOT NULL DEFAULT 0,
+			query_started_at INTEGER NOT NULL DEFAULT 0,
+			query_expires_at INTEGER NOT NULL DEFAULT 0,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cdk_bind_token ON cdk_session_bindings(redemption_token)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_cdk_bind_token_unique
+		 ON cdk_session_bindings(redemption_token)
+		 WHERE TRIM(COALESCE(redemption_token,'')) != ''`,
+		`CREATE TABLE IF NOT EXISTS cdk_preflight_grants (
+			attempt_nonce TEXT NOT NULL,
+			token_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY(attempt_nonce, token_hash)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cdk_preflight_grants_created ON cdk_preflight_grants(created_at)`,
 
 		// 代理失败换码日志（旧码 → 新码，仅未扣款失败）
 		`CREATE TABLE IF NOT EXISTS agent_cdk_exchanges (
@@ -278,10 +313,139 @@ func createTables() error {
 	if err := migrateCardplatformCDKStatusCol(); err != nil {
 		log.Printf("migrateCardplatformCDKStatusCol: %v", err)
 	}
+	if err := migrateCDKBindingQueryWindow(); err != nil {
+		return err
+	}
+	if err := purgeAllExpiredCDKBindings(time.Now()); err != nil {
+		return err
+	}
 	if err := ensureDefaultAdmin(); err != nil {
 		return err
 	}
 	return nil
+}
+
+const (
+	cdkPublicQueryWindow     = 7 * 24 * time.Hour
+	cdkPreflightRetentionTTL = 24 * time.Hour
+	cdkCleanupInterval       = 15 * time.Minute
+	cdkPreflightGrantLimit   = 16
+)
+
+// StartCDKQueryCleanup periodically erases expired public-query credentials
+// even when a customer never returns to the query page. Access is rejected at
+// the exact deadline; this sweep bounds physical retention for idle rows too.
+func StartCDKQueryCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(cdkCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				if err := purgeAllExpiredCDKBindings(now); err != nil {
+					log.Printf("[cdk-query-cleanup] failed: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+// migrateCDKBindingQueryWindow adds the bounded public-query metadata to old
+// databases. Historical rows are backfilled exactly once: only a database
+// which had neither window column before this migration is considered legacy.
+// This distinction matters because preview-only rows created after deployment
+// must stay inactive across restarts.
+func migrateCDKBindingQueryWindow() error {
+	if DB == nil {
+		return nil
+	}
+
+	columns := make(map[string]bool)
+	rows, err := DB.Query(`SELECT name FROM pragma_table_info('cdk_session_bindings')`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	legacyWithoutWindow := !columns["query_started_at"] && !columns["query_expires_at"]
+
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	additions := []struct {
+		name string
+		sql  string
+	}{
+		{"account_email", `ALTER TABLE cdk_session_bindings ADD COLUMN account_email TEXT NOT NULL DEFAULT ''`},
+		{"attempt_nonce", `ALTER TABLE cdk_session_bindings ADD COLUMN attempt_nonce TEXT NOT NULL DEFAULT ''`},
+		{"submit_claimed_at", `ALTER TABLE cdk_session_bindings ADD COLUMN submit_claimed_at INTEGER NOT NULL DEFAULT 0`},
+		{"query_started_at", `ALTER TABLE cdk_session_bindings ADD COLUMN query_started_at INTEGER NOT NULL DEFAULT 0`},
+		{"query_expires_at", `ALTER TABLE cdk_session_bindings ADD COLUMN query_expires_at INTEGER NOT NULL DEFAULT 0`},
+	}
+	for _, addition := range additions {
+		if columns[addition.name] {
+			continue
+		}
+		if _, err := tx.Exec(addition.sql); err != nil {
+			return err
+		}
+	}
+
+	if legacyWithoutWindow {
+		windowSeconds := int64(cdkPublicQueryWindow / time.Second)
+		if _, err := tx.Exec(`
+			UPDATE cdk_session_bindings
+			SET query_started_at = CAST(strftime('%s', updated_at) AS INTEGER),
+				query_expires_at = CAST(strftime('%s', updated_at) AS INTEGER) + ?
+			WHERE (TRIM(COALESCE(redemption_token,'')) != '' OR TRIM(COALESCE(session_payload,'')) != '')
+			  AND strftime('%s', updated_at) IS NOT NULL
+			  AND query_started_at = 0
+			  AND query_expires_at = 0
+		`, windowSeconds); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_cdk_bind_query_expiry ON cdk_session_bindings(query_expires_at)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_cdk_bind_preflight_updated
+		ON cdk_session_bindings(updated_at)
+		WHERE query_started_at = 0 AND query_expires_at = 0
+	`); err != nil {
+		return err
+	}
+	// This is a correctness boundary, not an optional performance index: token
+	// lookups use one immutable attempt identity and must never face duplicates.
+	// Re-run it in the strict migration transaction so a duplicate or DDL error
+	// aborts startup instead of being reduced to the generic create-table warning.
+	if _, err := tx.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_cdk_bind_token_unique
+		ON cdk_session_bindings(redemption_token)
+		WHERE TRIM(COALESCE(redemption_token,'')) != ''
+	`); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // migrateCardplatformCDKStatusCol 为已存完整码表补 status（禁用后列表要展示）。
@@ -423,6 +587,29 @@ func SetSetting(key, value string) error {
 func DeleteSetting(key string) error {
 	_, err := DB.Exec(`DELETE FROM site_settings WHERE key = ?`, key)
 	return err
+}
+
+// ConsumeMarketplaceSSONonce records a one-time SSO assertion. The insert is
+// performed transactionally, so concurrent requests cannot both redeem it.
+func ConsumeMarketplaceSSONonce(jti string, expiresAt int64) error {
+	if DB == nil || strings.TrimSpace(jti) == "" || expiresAt <= time.Now().Unix() {
+		return fmt.Errorf("invalid marketplace sso nonce")
+	}
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM marketplace_sso_nonces WHERE expires_at < ?`, time.Now().Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO marketplace_sso_nonces (jti, expires_at) VALUES (?, ?)`, jti, expiresAt); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrSSONonceUsed
+		}
+		return err
+	}
+	return tx.Commit()
 }
 
 // EnsureSetupToken 未安装时准备一次性安装令牌（hash 入库，明文仅首次创建时返回供打日志）。
@@ -677,24 +864,149 @@ func normalizeCDKCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }
 
-// BindCDKRedemptionToken preview 成功后：码 ↔ redemption_token
+var (
+	// ErrCDKQueryNotStarted means the CDK is known but no redemption attempt has
+	// activated its seven-day public query window yet.
+	ErrCDKQueryNotStarted = errors.New("cdk public query window not started")
+	// ErrCDKQueryExpired means the seven-day public query window has ended. The
+	// corresponding customer session/token/email are erased before it is returned.
+	ErrCDKQueryExpired = errors.New("cdk public query window expired")
+	// ErrCDKPreflightExpired means an unsubmitted preview/preflight binding has
+	// reached its 24-hour retention boundary and can no longer start a query window.
+	ErrCDKPreflightExpired = errors.New("cdk preflight binding expired")
+	// ErrCDKBindingMismatch means a CDK and redemption token do not belong to
+	// the same preview. Public handlers must reject the request before contacting
+	// the upstream service.
+	ErrCDKBindingMismatch = errors.New("cdk and redemption token mismatch")
+	// ErrCDKQueryAlreadyStarted means preflight was attempted after the customer
+	// had already submitted the redemption. Result queries remain available until
+	// the fixed seven-day deadline, but credentials can no longer be replaced.
+	ErrCDKQueryAlreadyStarted = errors.New("cdk query window already started")
+	// ErrCDKBindingChanged means the binding changed while an upstream preview
+	// request was in flight. The stale preview response must not overwrite a
+	// concurrent redeem or a newer preview.
+	ErrCDKBindingChanged = errors.New("cdk binding changed concurrently")
+	// ErrCDKSubmitAlreadyClaimed means this exact attempt has already crossed
+	// the one-way submit latch. Public handlers must never call upstream again.
+	ErrCDKSubmitAlreadyClaimed = errors.New("cdk redemption attempt already submitted")
+	// ErrCDKPreflightLimit bounds repeated account checks for one pending
+	// attempt before they can amplify upstream work or persistent grant hashes.
+	ErrCDKPreflightLimit = errors.New("cdk preflight grant limit reached")
+)
+
+// BindCDKRedemptionToken records a pending attempt only after the upstream
+// preview has confirmed that this CDK is currently usable. An active query
+// window can never be reset by preview; after expiry, a successful upstream
+// preview may start a new pending attempt without retaining old credentials.
 func BindCDKRedemptionToken(cdkCode, redemptionToken string) error {
+	expected, err := GetBindingByCDK(cdkCode)
+	if err != nil {
+		return err
+	}
+	return BindCDKRedemptionTokenCAS(cdkCode, redemptionToken, expected)
+}
+
+// BindCDKRedemptionTokenCAS persists an upstream preview only when the binding
+// still exactly matches the snapshot captured before that network request.
+func BindCDKRedemptionTokenCAS(cdkCode, redemptionToken string, expected *CDKBinding) error {
+	_, err := bindCDKRedemptionTokenCAS(cdkCode, redemptionToken, expected, false)
+	return err
+}
+
+// BindCDKRedemptionTokenCASWithAttempt is the public-preview variant which
+// returns the fresh, opaque local attempt handle required by preflight/redeem.
+func BindCDKRedemptionTokenCASWithAttempt(cdkCode, redemptionToken string, expected *CDKBinding) (string, error) {
+	return bindCDKRedemptionTokenCAS(cdkCode, redemptionToken, expected, false)
+}
+
+// BindCDKRedemptionTokenCASForFailedRetry is reserved for a handler which has
+// just verified, using the current attempt token, that the upstream order is in
+// a terminal failed state. It permits that failed active attempt to become a
+// new pending attempt without letting an ordinary preview renew its window.
+func BindCDKRedemptionTokenCASForFailedRetry(cdkCode, redemptionToken string, expected *CDKBinding) error {
+	_, err := bindCDKRedemptionTokenCAS(cdkCode, redemptionToken, expected, true)
+	return err
+}
+
+func BindCDKRedemptionTokenCASForFailedRetryWithAttempt(cdkCode, redemptionToken string, expected *CDKBinding) (string, error) {
+	return bindCDKRedemptionTokenCAS(cdkCode, redemptionToken, expected, true)
+}
+
+func bindCDKRedemptionTokenCAS(cdkCode, redemptionToken string, expected *CDKBinding, allowFailedRetry bool) (string, error) {
 	if DB == nil {
-		return fmt.Errorf("db not ready")
+		return "", fmt.Errorf("db not ready")
 	}
 	code := normalizeCDKCode(cdkCode)
 	tok := strings.TrimSpace(redemptionToken)
 	if code == "" || tok == "" {
-		return nil
+		return "", nil
 	}
-	_, err := DB.Exec(`
-		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, updated_at)
-		VALUES (?, '', ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(cdk_code) DO UPDATE SET
-			redemption_token = excluded.redemption_token,
-			updated_at = CURRENT_TIMESTAMP
-	`, code, tok)
-	return err
+	now := time.Now().UTC()
+	if !allowFailedRetry && expected != nil && (expected.QueryStartedAt > 0 || expected.QueryExpiresAt > 0) &&
+		(expected.QueryExpiresAt <= 0 || now.Unix() < expected.QueryExpiresAt) {
+		return "", ErrCDKQueryAlreadyStarted
+	}
+
+	// The first statement in this transaction is a write. Avoiding a deferred
+	// read-to-write upgrade prevents SQLITE_BUSY_SNAPSHOT when previews race.
+	tx, err := DB.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = tx.Rollback() }()
+	revision := now.Format("2006-01-02 15:04:05.999999999")
+	attemptNonce := randomPassword(32)
+	var res sql.Result
+	if expected == nil {
+		res, err = tx.Exec(`
+			INSERT OR IGNORE INTO cdk_session_bindings
+				(cdk_code, session_payload, redemption_token, account_email, attempt_nonce,
+				 submit_claimed_at, query_started_at, query_expires_at, updated_at)
+			VALUES (?, '', ?, '', ?, 0, 0, 0, ?)
+		`, code, tok, attemptNonce, revision)
+	} else {
+		res, err = tx.Exec(`
+			UPDATE cdk_session_bindings
+			SET session_payload = '', redemption_token = ?, account_email = '', attempt_nonce = ?,
+				submit_claimed_at = 0, query_started_at = 0, query_expires_at = 0, updated_at = ?
+			WHERE cdk_code = ?
+			  AND COALESCE(redemption_token,'') = ?
+			  AND COALESCE(session_payload,'') = ?
+			  AND COALESCE(account_email,'') = ?
+			  AND COALESCE(attempt_nonce,'') = ?
+			  AND COALESCE(submit_claimed_at,0) = ?
+			  AND COALESCE(query_started_at,0) = ?
+			  AND COALESCE(query_expires_at,0) = ?
+			  AND COALESCE(updated_at,'') = ?
+		`, tok, attemptNonce, revision, code, expected.RedemptionToken, expected.SessionPayload,
+			expected.AccountEmail, expected.AttemptNonce, expected.SubmitClaimedAt,
+			expected.QueryStartedAt, expected.QueryExpiresAt,
+			expected.UpdatedAt)
+	}
+	if err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return "", ErrCDKBindingChanged
+	}
+	if expected != nil && strings.TrimSpace(expected.AttemptNonce) != "" {
+		if _, err := tx.Exec(`DELETE FROM cdk_preflight_grants WHERE attempt_nonce = ?`, expected.AttemptNonce); err != nil {
+			return "", err
+		}
+	}
+	// Historical business rows remain for audit, but their credential material
+	// is never carried into a newly verified attempt.
+	if _, err := tx.Exec(`
+		UPDATE recharge_tasks
+		SET session_json = NULL
+		WHERE UPPER(TRIM(cdk_code)) = ?
+	`, code); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return attemptNonce, nil
 }
 
 // BindCDKSession 预检/兑换时写入 session（可按码或 redemption_token 关联）
@@ -708,14 +1020,25 @@ func BindCDKSession(cdkCode, redemptionToken, sessionPayload string) error {
 	if sess == "" {
 		return nil
 	}
+	if code != "" {
+		bestEffortPurgeCDKBindingByCode(code, time.Now())
+	} else if tok != "" {
+		bestEffortPurgeCDKBindingByToken(tok, time.Now())
+	}
 	// 优先已知码
 	if code != "" {
 		_, err := DB.Exec(`
 			INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, updated_at)
 			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
 			ON CONFLICT(cdk_code) DO UPDATE SET
-				session_payload = excluded.session_payload,
-				redemption_token = COALESCE(NULLIF(excluded.redemption_token,''), cdk_session_bindings.redemption_token),
+				session_payload = CASE
+					WHEN cdk_session_bindings.query_expires_at > 0
+					 AND cdk_session_bindings.query_expires_at <= CAST(strftime('%s','now') AS INTEGER)
+					THEN '' ELSE excluded.session_payload END,
+				redemption_token = CASE
+					WHEN cdk_session_bindings.query_expires_at > 0
+					 AND cdk_session_bindings.query_expires_at <= CAST(strftime('%s','now') AS INTEGER)
+					THEN '' ELSE COALESCE(NULLIF(excluded.redemption_token,''), cdk_session_bindings.redemption_token) END,
 				updated_at = CURRENT_TIMESTAMP
 		`, code, sess, tok)
 		return err
@@ -724,7 +1047,11 @@ func BindCDKSession(cdkCode, redemptionToken, sessionPayload string) error {
 	if tok != "" {
 		res, err := DB.Exec(`
 			UPDATE cdk_session_bindings
-			SET session_payload = ?, updated_at = CURRENT_TIMESTAMP
+			SET session_payload = CASE
+					WHEN query_expires_at > 0
+					 AND query_expires_at <= CAST(strftime('%s','now') AS INTEGER)
+					THEN '' ELSE ? END,
+				updated_at = CURRENT_TIMESTAMP
 			WHERE redemption_token = ?
 		`, sess, tok)
 		if err != nil {
@@ -733,34 +1060,440 @@ func BindCDKSession(cdkCode, redemptionToken, sessionPayload string) error {
 		if n, _ := res.RowsAffected(); n > 0 {
 			return nil
 		}
-		// 尚无行：用 token 伪作 key 前缀保存（账单页仍建议用完整码）
-		_, err = DB.Exec(`
-			INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, updated_at)
-			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		`, "RT:"+tok, sess, tok)
-		return err
+		// Unknown tokens are not persisted without their CDK. Otherwise a token
+		// which was erased after expiry could create a fresh row and renew access.
+		return nil
 	}
 	return nil
 }
 
-// GetSessionByCDK 账单查询：凭卡密取绑定 session
-func GetSessionByCDK(cdkCode string) (string, error) {
+// BindCDKAccountEmail is the compatibility wrapper for callers without an
+// in-flight attempt snapshot. It resolves the current nonce and delegates to
+// the strict compare-and-set implementation.
+func BindCDKAccountEmail(cdkCode, redemptionToken, accountEmail string) error {
+	now := time.Now().UTC()
+	binding, err := inspectCDKBindingIdentity(normalizeCDKCode(cdkCode), strings.TrimSpace(redemptionToken), now)
+	if err != nil {
+		return err
+	}
+	if binding == nil {
+		return sql.ErrNoRows
+	}
+	return BindCDKAccountEmailForAttempt(binding.CDKCode, binding.RedemptionToken, binding.AttemptNonce, accountEmail)
+}
+
+// BindCDKAccountEmailForAttempt records the minimum identity needed for billing
+// only when code, token and the server-only attempt nonce still match. This
+// prevents a slow response from an older attempt writing its email into a new
+// attempt when an upstream provider reuses the same opaque token.
+func BindCDKAccountEmailForAttempt(cdkCode, redemptionToken, attemptNonce, accountEmail string) error {
 	if DB == nil {
-		return "", fmt.Errorf("db not ready")
+		return fmt.Errorf("db not ready")
 	}
 	code := normalizeCDKCode(cdkCode)
-	if code == "" {
+	tok := strings.TrimSpace(redemptionToken)
+	email := strings.ToLower(strings.TrimSpace(accountEmail))
+	if email == "" {
+		return nil
+	}
+	if tok == "" {
+		return sql.ErrNoRows
+	}
+	now := time.Now().UTC()
+	binding, err := inspectCDKBindingIdentity(code, tok, now)
+	if err != nil {
+		return err
+	}
+	if binding == nil {
+		return sql.ErrNoRows
+	}
+	if binding.AttemptNonce != attemptNonce {
+		return ErrCDKBindingChanged
+	}
+	code = binding.CDKCode
+	nowUnix := now.Unix()
+	preflightCutoff := now.Add(-cdkPreflightRetentionTTL).Unix()
+	res, err := DB.Exec(`
+		UPDATE cdk_session_bindings
+		SET account_email = ?
+		WHERE cdk_code = ?
+		  AND redemption_token = ?
+		  AND COALESCE(attempt_nonce,'') = ?
+		  AND (TRIM(COALESCE(account_email,'')) = '' OR LOWER(TRIM(account_email)) = ?)
+		  AND (
+			(query_started_at > 0 AND query_expires_at > ?)
+			OR (
+				query_started_at = 0 AND query_expires_at = 0
+				AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) > ?
+			)
+		  )
+	`, email, code, tok, attemptNonce, email, nowUnix, preflightCutoff)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	// Re-check to return an explicit race-safe cause if the deadline or preview
+	// token changed while the upstream preflight/result request was in flight.
+	latest, err := inspectCDKBindingIdentity(code, tok, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if latest != nil && latest.AttemptNonce != attemptNonce {
+		return ErrCDKBindingChanged
+	}
+	if latest != nil && strings.TrimSpace(latest.AccountEmail) != "" &&
+		!strings.EqualFold(strings.TrimSpace(latest.AccountEmail), email) {
+		return ErrCDKBindingChanged
+	}
+	if latest != nil && strings.EqualFold(strings.TrimSpace(latest.AccountEmail), email) {
+		return nil
+	}
+	return sql.ErrNoRows
+}
+
+// GetCDKPreflightBindingByToken validates the short-lived preview identity
+// before any public preflight request is sent upstream. Preflight is only valid
+// before the first real submission and cannot be used to alter an active order.
+func GetCDKPreflightBindingByToken(redemptionToken string, now time.Time) (*CDKBinding, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("db not ready")
+	}
+	tok := strings.TrimSpace(redemptionToken)
+	if tok == "" {
+		return nil, sql.ErrNoRows
+	}
+	binding, err := inspectCDKBindingIdentity("", tok, now.UTC())
+	if err != nil {
+		return nil, err
+	}
+	if binding == nil {
+		return nil, sql.ErrNoRows
+	}
+	if binding.QueryStartedAt > 0 || binding.QueryExpiresAt > 0 {
+		return nil, ErrCDKQueryAlreadyStarted
+	}
+	return binding, nil
+}
+
+// CheckCDKPreflightGrantCapacity is a fast pre-upstream guard. Registration
+// still prunes transactionally, so concurrent requests remain storage-bounded
+// even if several pass this advisory check at the same moment.
+func CheckCDKPreflightGrantCapacity(attemptNonce string) error {
+	if DB == nil {
+		return fmt.Errorf("db not ready")
+	}
+	nonce := strings.TrimSpace(attemptNonce)
+	if nonce == "" {
+		return ErrCDKBindingMismatch
+	}
+	var count int
+	if err := DB.QueryRow(`
+		SELECT COUNT(*) FROM cdk_preflight_grants WHERE attempt_nonce = ?
+	`, nonce).Scan(&count); err != nil {
+		return err
+	}
+	if count >= cdkPreflightGrantLimit {
+		return ErrCDKPreflightLimit
+	}
+	return nil
+}
+
+// inspectCDKBindingIdentity resolves one immutable code/token pair and applies
+// the exact 24-hour preflight and seven-day result boundaries. It never extends
+// either deadline.
+func inspectCDKBindingIdentity(cdkCode, redemptionToken string, now time.Time) (*CDKBinding, error) {
+	code := normalizeCDKCode(cdkCode)
+	tok := strings.TrimSpace(redemptionToken)
+	if tok == "" {
+		return nil, sql.ErrNoRows
+	}
+
+	load := func(where string, arg any) (*CDKBinding, int64, error) {
+		var b CDKBinding
+		var updatedAtUnix int64
+		err := DB.QueryRow(`
+			SELECT cdk_code, COALESCE(redemption_token,''), COALESCE(session_payload,''),
+				COALESCE(account_email,''), COALESCE(attempt_nonce,''), COALESCE(submit_claimed_at,0),
+				COALESCE(query_started_at,0), COALESCE(query_expires_at,0),
+				COALESCE(updated_at,''),
+				COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0)
+			FROM cdk_session_bindings
+			WHERE `+where+`
+			LIMIT 1
+		`, arg).Scan(
+			&b.CDKCode, &b.RedemptionToken, &b.SessionPayload, &b.AccountEmail, &b.AttemptNonce, &b.SubmitClaimedAt,
+			&b.QueryStartedAt, &b.QueryExpiresAt,
+			&b.UpdatedAt, &updatedAtUnix,
+		)
+		if err == sql.ErrNoRows {
+			return nil, 0, nil
+		}
+		return &b, updatedAtUnix, err
+	}
+
+	binding, updatedAtUnix, err := load("redemption_token = ?", tok)
+	if err != nil {
+		return nil, err
+	}
+	if binding == nil && code != "" {
+		binding, updatedAtUnix, err = load("cdk_code = ?", code)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if binding == nil {
+		return nil, sql.ErrNoRows
+	}
+	nowUnix := now.UTC().Unix()
+	if binding.QueryExpiresAt > 0 && nowUnix >= binding.QueryExpiresAt {
+		if err := purgeExpiredCDKBindingSnapshot(binding, now); err != nil {
+			return nil, err
+		}
+		return nil, ErrCDKQueryExpired
+	}
+	if binding.QueryStartedAt == 0 && binding.QueryExpiresAt == 0 &&
+		updatedAtUnix <= now.Add(-cdkPreflightRetentionTTL).UTC().Unix() {
+		bestEffortPurgeCDKBindingByCode(binding.CDKCode, now)
+		return nil, ErrCDKPreflightExpired
+	}
+	if (code != "" && binding.CDKCode != code) || binding.RedemptionToken != tok {
+		return nil, ErrCDKBindingMismatch
+	}
+	return binding, nil
+}
+
+// ClaimCDKRedemptionAttempt atomically starts the fixed query window and closes
+// the one-way submit latch for one exact attempt. Only the first caller can
+// proceed to the upstream redeem endpoint; retries receive an explicit error.
+// RegisterCDKPreflightGrant records only a one-way hash of an upstream
+// preflight token for this exact pending attempt. No account identity or
+// credential is stored, and concurrent successful preflights may coexist.
+func RegisterCDKPreflightGrant(cdkCode, redemptionToken, attemptNonce, preflightToken string, now time.Time) error {
+	if DB == nil {
+		return fmt.Errorf("db not ready")
+	}
+	code := normalizeCDKCode(cdkCode)
+	tok := strings.TrimSpace(redemptionToken)
+	nonce := strings.TrimSpace(attemptNonce)
+	preflight := strings.TrimSpace(preflightToken)
+	if code == "" || tok == "" || nonce == "" || preflight == "" || len(preflight) > 2048 {
+		return ErrCDKBindingMismatch
+	}
+	binding, err := inspectCDKBindingIdentity(code, tok, now.UTC())
+	if err != nil {
+		return err
+	}
+	if binding == nil || binding.AttemptNonce != nonce {
+		return ErrCDKBindingChanged
+	}
+	if binding.QueryStartedAt > 0 || binding.QueryExpiresAt > 0 || binding.SubmitClaimedAt > 0 {
+		return ErrCDKQueryAlreadyStarted
+	}
+	hash := legacySHA256(preflight)
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`
+		INSERT OR IGNORE INTO cdk_preflight_grants(attempt_nonce, token_hash, created_at)
+		SELECT ?, ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM cdk_session_bindings
+			WHERE cdk_code = ? AND redemption_token = ?
+			  AND COALESCE(attempt_nonce,'') = ?
+			  AND COALESCE(submit_claimed_at,0) = 0
+			  AND COALESCE(query_started_at,0) = 0
+			  AND COALESCE(query_expires_at,0) = 0
+		)
+	`, nonce, hash, now.UTC().Unix(), code, tok, nonce)
+	if err != nil {
+		return err
+	}
+	inserted, _ := res.RowsAffected()
+	if inserted != 1 {
+		var exists int
+		if err := tx.QueryRow(`
+			SELECT EXISTS(SELECT 1 FROM cdk_preflight_grants WHERE attempt_nonce = ? AND token_hash = ?)
+		`, nonce, hash).Scan(&exists); err != nil {
+			return err
+		}
+		if exists != 1 {
+			return ErrCDKBindingChanged
+		}
+	}
+	// Keep parallel preflights usable while bounding one attempt's persistent
+	// hashes and upstream-amplification footprint. Newest grants win once the
+	// conservative per-attempt allowance is exceeded.
+	if _, err := tx.Exec(`
+		DELETE FROM cdk_preflight_grants
+		WHERE attempt_nonce = ?
+		  AND rowid NOT IN (
+			SELECT rowid FROM cdk_preflight_grants
+			WHERE attempt_nonce = ?
+			ORDER BY created_at DESC, rowid DESC
+			LIMIT ?
+		  )
+	`, nonce, nonce, cdkPreflightGrantLimit); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func ClaimCDKRedemptionAttempt(redemptionToken, attemptNonce, preflightToken string, now time.Time) error {
+	if DB == nil {
+		return fmt.Errorf("db not ready")
+	}
+	tok := strings.TrimSpace(redemptionToken)
+	nonce := strings.TrimSpace(attemptNonce)
+	preflight := strings.TrimSpace(preflightToken)
+	if tok == "" || nonce == "" || preflight == "" || len(preflight) > 2048 {
+		return ErrCDKBindingMismatch
+	}
+	preflightHash := legacySHA256(preflight)
+	startedAt := now.UTC().Unix()
+	expiresAt := startedAt + int64(cdkPublicQueryWindow/time.Second)
+	preflightCutoff := now.Add(-cdkPreflightRetentionTTL).UTC().Unix()
+	res, err := DB.Exec(`
+		UPDATE cdk_session_bindings
+		SET submit_claimed_at = ?, query_started_at = ?, query_expires_at = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE redemption_token = ?
+		  AND COALESCE(attempt_nonce,'') = ?
+		  AND COALESCE(submit_claimed_at,0) = 0
+		  AND COALESCE(query_started_at,0) = 0
+		  AND COALESCE(query_expires_at,0) = 0
+		  AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) > ?
+		  AND EXISTS (
+			SELECT 1 FROM cdk_preflight_grants g
+			WHERE g.attempt_nonce = cdk_session_bindings.attempt_nonce
+			  AND g.token_hash = ?
+		  )
+	`, startedAt, startedAt, expiresAt, tok, nonce, preflightCutoff, preflightHash)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 1 {
+		_, _ = DB.Exec(`DELETE FROM cdk_preflight_grants WHERE attempt_nonce = ?`, nonce)
+		return nil
+	}
+
+	var currentNonce string
+	var claimedAt, queryStartedAt, queryExpiresAt, updatedAtUnix int64
+	err = DB.QueryRow(`
+		SELECT COALESCE(attempt_nonce,''), COALESCE(submit_claimed_at,0),
+			COALESCE(query_started_at,0), COALESCE(query_expires_at,0),
+			COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0)
+		FROM cdk_session_bindings
+		WHERE redemption_token = ?
+		LIMIT 1
+	`, tok).Scan(&currentNonce, &claimedAt, &queryStartedAt, &queryExpiresAt, &updatedAtUnix)
+	if err != nil {
+		return err
+	}
+	if currentNonce != nonce {
+		return ErrCDKBindingMismatch
+	}
+	if queryExpiresAt > 0 && startedAt >= queryExpiresAt {
+		bestEffortPurgeCDKBindingByToken(tok, now)
+		return ErrCDKQueryExpired
+	}
+	if claimedAt > 0 || queryStartedAt > 0 || queryExpiresAt > 0 {
+		return ErrCDKSubmitAlreadyClaimed
+	}
+	if updatedAtUnix <= preflightCutoff {
+		bestEffortPurgeCDKBindingByToken(tok, now)
+		return ErrCDKPreflightExpired
+	}
+	var grantExists int
+	if err := DB.QueryRow(`
+		SELECT EXISTS(SELECT 1 FROM cdk_preflight_grants WHERE attempt_nonce = ? AND token_hash = ?)
+	`, nonce, preflightHash).Scan(&grantExists); err != nil {
+		return err
+	}
+	if grantExists == 0 {
+		return ErrCDKBindingMismatch
+	}
+	return ErrCDKBindingChanged
+}
+
+// ActivateCDKQueryWindowByToken starts the public query window once. Repeated
+// calls preserve the original timestamps and can never renew an expired CDK.
+func ActivateCDKQueryWindowByToken(redemptionToken string, now time.Time) error {
+	if DB == nil {
+		return fmt.Errorf("db not ready")
+	}
+	tok := strings.TrimSpace(redemptionToken)
+	if tok == "" {
+		return sql.ErrNoRows
+	}
+	startedAt := now.UTC().Unix()
+	expiresAt := startedAt + int64(cdkPublicQueryWindow/time.Second)
+	preflightCutoff := now.Add(-cdkPreflightRetentionTTL).UTC().Unix()
+	res, err := DB.Exec(`
+		UPDATE cdk_session_bindings
+		SET query_started_at = CASE
+				WHEN query_started_at > 0 THEN query_started_at
+				WHEN query_expires_at > 0 THEN query_expires_at - ?
+				ELSE ? END,
+			query_expires_at = CASE
+				WHEN query_expires_at > 0 THEN query_expires_at
+				WHEN query_started_at > 0 THEN query_started_at + ?
+				ELSE ? END,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE redemption_token = ?
+		  AND NOT (query_expires_at > 0 AND query_expires_at <= ?)
+		  AND NOT (
+			query_started_at = 0 AND query_expires_at = 0
+			AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+		  )
+	`, int64(cdkPublicQueryWindow/time.Second), startedAt,
+		int64(cdkPublicQueryWindow/time.Second), expiresAt, tok, startedAt, preflightCutoff)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var queryStartedAt, queryExpiresAt int64
+		var stale int
+		err := DB.QueryRow(`
+			SELECT COALESCE(query_started_at,0), COALESCE(query_expires_at,0),
+				CASE WHEN query_started_at = 0 AND query_expires_at = 0
+					AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+					THEN 1 ELSE 0 END
+			FROM cdk_session_bindings
+			WHERE redemption_token = ?
+			LIMIT 1
+		`, preflightCutoff, tok).Scan(&queryStartedAt, &queryExpiresAt, &stale)
+		if err == nil && queryExpiresAt > 0 && queryExpiresAt <= startedAt {
+			bestEffortPurgeCDKBindingByToken(tok, now)
+			return ErrCDKQueryExpired
+		}
+		if err == nil && stale == 1 {
+			bestEffortPurgeCDKBindingByToken(tok, now)
+			return ErrCDKPreflightExpired
+		}
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// GetSessionByCDK returns a legacy session only while the same seven-day
+// binding window is active. New public flows store email rather than Session,
+// but internal compatibility callers must not bypass expiry cleanup.
+func GetSessionByCDK(cdkCode string) (string, error) {
+	binding, err := GetPublicCDKBindingByCode(cdkCode, time.Now())
+	if errors.Is(err, ErrCDKQueryNotStarted) || errors.Is(err, ErrCDKQueryExpired) || binding == nil {
 		return "", nil
 	}
-	var sess string
-	err := DB.QueryRow(`
-		SELECT session_payload FROM cdk_session_bindings
-		WHERE cdk_code = ? AND TRIM(session_payload) != ''
-	`, code).Scan(&sess)
-	if err == sql.ErrNoRows {
-		return "", nil
+	if err != nil {
+		return "", err
 	}
-	return sess, err
+	return binding.SessionPayload, nil
 }
 
 // CDKBinding 本地码 ↔ token ↔ session 绑定（公开兑换进度/账单依赖）
@@ -768,6 +1501,11 @@ type CDKBinding struct {
 	CDKCode         string
 	RedemptionToken string
 	SessionPayload  string
+	AccountEmail    string
+	AttemptNonce    string
+	SubmitClaimedAt int64
+	QueryStartedAt  int64
+	QueryExpiresAt  int64
 	UpdatedAt       string
 }
 
@@ -782,10 +1520,15 @@ func GetBindingByCDK(cdkCode string) (*CDKBinding, error) {
 	}
 	var b CDKBinding
 	err := DB.QueryRow(`
-		SELECT cdk_code, COALESCE(redemption_token,''), COALESCE(session_payload,''), COALESCE(updated_at,'')
+		SELECT cdk_code, COALESCE(redemption_token,''), COALESCE(session_payload,''),
+			COALESCE(account_email,''), COALESCE(attempt_nonce,''), COALESCE(submit_claimed_at,0),
+			COALESCE(query_started_at,0), COALESCE(query_expires_at,0),
+			COALESCE(updated_at,'')
 		FROM cdk_session_bindings
 		WHERE cdk_code = ?
-	`, code).Scan(&b.CDKCode, &b.RedemptionToken, &b.SessionPayload, &b.UpdatedAt)
+	`, code).Scan(&b.CDKCode, &b.RedemptionToken, &b.SessionPayload,
+		&b.AccountEmail, &b.AttemptNonce, &b.SubmitClaimedAt,
+		&b.QueryStartedAt, &b.QueryExpiresAt, &b.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -793,6 +1536,320 @@ func GetBindingByCDK(cdkCode string) (*CDKBinding, error) {
 		return nil, err
 	}
 	return &b, nil
+}
+
+// GetPublicCDKBindingByCode returns only an active public binding. Known but
+// inactive/expired bindings are reported with explicit sentinel errors.
+func GetPublicCDKBindingByCode(cdkCode string, now time.Time) (*CDKBinding, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("db not ready")
+	}
+	code := normalizeCDKCode(cdkCode)
+	if code == "" {
+		return nil, nil
+	}
+	return getPublicCDKBinding(`cdk_code = ?`, code, now)
+}
+
+// GetPublicCDKBindingByToken is the token equivalent of
+// GetPublicCDKBindingByCode.
+func GetPublicCDKBindingByToken(redemptionToken string, now time.Time) (*CDKBinding, error) {
+	if DB == nil {
+		return nil, fmt.Errorf("db not ready")
+	}
+	tok := strings.TrimSpace(redemptionToken)
+	if tok == "" {
+		return nil, nil
+	}
+	return getPublicCDKBinding(`redemption_token = ?`, tok, now)
+}
+
+func getPublicCDKBinding(whereClause, value string, now time.Time) (*CDKBinding, error) {
+	var b CDKBinding
+	query := `
+		SELECT cdk_code, COALESCE(redemption_token,''), COALESCE(session_payload,''),
+			COALESCE(account_email,''), COALESCE(attempt_nonce,''), COALESCE(submit_claimed_at,0),
+			COALESCE(query_started_at,0), COALESCE(query_expires_at,0),
+			COALESCE(updated_at,'')
+		FROM cdk_session_bindings
+		WHERE ` + whereClause + `
+		LIMIT 1`
+	err := DB.QueryRow(query, value).Scan(
+		&b.CDKCode, &b.RedemptionToken, &b.SessionPayload, &b.AccountEmail, &b.AttemptNonce, &b.SubmitClaimedAt,
+		&b.QueryStartedAt, &b.QueryExpiresAt, &b.UpdatedAt,
+	)
+	// Do this after scanning so a token query which reaches its exact expiry can
+	// still return ErrCDKQueryExpired once, even though cleanup erases the token.
+	// The request path only touches this CDK; the full-table sweep is startup-only.
+	if err == nil {
+		bestEffortPurgeCDKBindingByCode(b.CDKCode, now)
+	}
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if b.QueryStartedAt <= 0 || b.QueryExpiresAt <= 0 {
+		return nil, ErrCDKQueryNotStarted
+	}
+	// The boundary is intentionally exclusive: now == expires_at is expired.
+	if now.UTC().Unix() >= b.QueryExpiresAt {
+		if err := purgeExpiredCDKBindingSnapshot(&b, now); err != nil {
+			return nil, err
+		}
+		return nil, ErrCDKQueryExpired
+	}
+	return &b, nil
+}
+
+// purgeExpiredCDKBindingSnapshot scrubs credentials only if the binding is
+// still the exact expired attempt that the caller inspected. The conditional
+// UPDATE is the transaction's first statement, so a concurrent fresh Preview
+// either wins first (and this cleanup becomes a no-op) or observes the scrubbed
+// old attempt and cannot accidentally have its new credentials removed.
+func purgeExpiredCDKBindingSnapshot(binding *CDKBinding, now time.Time) error {
+	if DB == nil || binding == nil {
+		return nil
+	}
+	code := normalizeCDKCode(binding.CDKCode)
+	nowUnix := now.UTC().Unix()
+	if code == "" || binding.QueryExpiresAt <= 0 || nowUnix < binding.QueryExpiresAt {
+		return nil
+	}
+
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.Exec(`
+		UPDATE cdk_session_bindings
+		SET session_payload = '', redemption_token = '', account_email = '', attempt_nonce = ''
+		WHERE cdk_code = ?
+		  AND COALESCE(redemption_token,'') = ?
+		  AND COALESCE(session_payload,'') = ?
+		  AND COALESCE(account_email,'') = ?
+		  AND COALESCE(attempt_nonce,'') = ?
+		  AND COALESCE(submit_claimed_at,0) = ?
+		  AND COALESCE(query_started_at,0) = ?
+		  AND COALESCE(query_expires_at,0) = ?
+		  AND COALESCE(updated_at,'') = ?
+		  AND query_expires_at > 0
+		  AND query_expires_at <= ?
+	`, code, binding.RedemptionToken, binding.SessionPayload, binding.AccountEmail,
+		binding.AttemptNonce, binding.SubmitClaimedAt, binding.QueryStartedAt,
+		binding.QueryExpiresAt, binding.UpdatedAt, nowUnix)
+	if err != nil {
+		return err
+	}
+	updated, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return tx.Commit()
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM cdk_preflight_grants WHERE attempt_nonce = ?
+	`, binding.AttemptNonce); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE recharge_tasks SET session_json = NULL
+		WHERE UPPER(TRIM(cdk_code)) = ?
+	`, code); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// purgeAllExpiredCDKBindings is the startup/runtime sweep for servers which
+// were offline when a retention deadline passed. It retains business/audit
+// rows and expiry tombstones, but removes credentials after either the fixed
+// seven-day submitted window or the 24-hour unsubmitted preflight TTL.
+func purgeAllExpiredCDKBindings(now time.Time) error {
+	if DB == nil {
+		return nil
+	}
+	nowUnix := now.UTC().Unix()
+	preflightCutoff := now.Add(-cdkPreflightRetentionTTL).UTC().Unix()
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`
+		DELETE FROM cdk_preflight_grants
+		WHERE created_at <= ?
+		   OR NOT EXISTS (
+			SELECT 1 FROM cdk_session_bindings b
+			WHERE b.attempt_nonce = cdk_preflight_grants.attempt_nonce
+			  AND COALESCE(b.submit_claimed_at,0) = 0
+			  AND COALESCE(b.query_started_at,0) = 0
+			  AND COALESCE(b.query_expires_at,0) = 0
+			  AND COALESCE(CAST(strftime('%s', b.updated_at) AS INTEGER), 0) > ?
+		   )
+	`, preflightCutoff, preflightCutoff); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE recharge_tasks
+		SET session_json = NULL
+		WHERE session_json IS NOT NULL
+		  AND UPPER(TRIM(cdk_code)) IN (
+			SELECT UPPER(TRIM(cdk_code))
+			FROM cdk_session_bindings
+			WHERE (query_expires_at > 0 AND query_expires_at <= ?)
+			   OR (
+				query_started_at = 0 AND query_expires_at = 0
+				AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+			   )
+		  )
+	`, nowUnix, preflightCutoff); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE cdk_session_bindings
+		SET session_payload = '', redemption_token = '', account_email = '', attempt_nonce = ''
+		WHERE (
+			(query_expires_at > 0 AND query_expires_at <= ?)
+			OR (
+				query_started_at = 0 AND query_expires_at = 0
+				AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+			)
+		  )
+		  AND (
+			TRIM(COALESCE(session_payload,'')) != '' OR
+			TRIM(COALESCE(redemption_token,'')) != '' OR
+			TRIM(COALESCE(account_email,'')) != '' OR
+			TRIM(COALESCE(attempt_nonce,'')) != ''
+		  )
+	`, nowUnix, preflightCutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func bestEffortPurgeCDKBindingByCode(cdkCode string, now time.Time) {
+	if err := purgeCDKBindingByCodeIfRetired(cdkCode, now); err != nil {
+		log.Printf("purge CDK query credentials by code: %v", err)
+	}
+}
+
+func bestEffortPurgeCDKBindingByToken(redemptionToken string, now time.Time) {
+	if DB == nil {
+		return
+	}
+	tok := strings.TrimSpace(redemptionToken)
+	if tok == "" {
+		return
+	}
+	var code string
+	err := DB.QueryRow(`
+		SELECT cdk_code FROM cdk_session_bindings
+		WHERE redemption_token = ?
+		LIMIT 1
+	`, tok).Scan(&code)
+	if err == sql.ErrNoRows {
+		return
+	}
+	if err != nil {
+		log.Printf("find CDK binding for targeted cleanup: %v", err)
+		return
+	}
+	bestEffortPurgeCDKBindingByCode(code, now)
+}
+
+// purgeCDKBindingByCodeIfRetired performs an indexed, single-CDK cleanup.
+// Unlike the startup sweep, recent request paths never scan or update unrelated
+// bindings and do not open a write transaction when this CDK is still valid.
+func purgeCDKBindingByCodeIfRetired(cdkCode string, now time.Time) error {
+	if DB == nil {
+		return nil
+	}
+	code := normalizeCDKCode(cdkCode)
+	if code == "" {
+		return nil
+	}
+	nowUnix := now.UTC().Unix()
+	preflightCutoff := now.Add(-cdkPreflightRetentionTTL).UTC().Unix()
+
+	var shouldPurge int
+	err := DB.QueryRow(`
+		SELECT EXISTS(
+			SELECT 1 FROM cdk_session_bindings
+			WHERE cdk_code = ?
+			  AND (
+				(query_expires_at > 0 AND query_expires_at <= ?)
+				OR (
+					query_started_at = 0 AND query_expires_at = 0
+					AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+				)
+			  )
+		)
+	`, code, nowUnix, preflightCutoff).Scan(&shouldPurge)
+	if err != nil {
+		return err
+	}
+	if shouldPurge == 0 {
+		return nil
+	}
+
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`
+		DELETE FROM cdk_preflight_grants
+		WHERE attempt_nonce IN (
+			SELECT attempt_nonce FROM cdk_session_bindings
+			WHERE cdk_code = ?
+			  AND (
+				(query_expires_at > 0 AND query_expires_at <= ?)
+				OR (
+					query_started_at = 0 AND query_expires_at = 0
+					AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+				)
+			  )
+		)
+	`, code, nowUnix, preflightCutoff); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE recharge_tasks SET session_json = NULL
+		WHERE session_json IS NOT NULL
+		  AND UPPER(TRIM(cdk_code)) = ?
+		  AND EXISTS (
+			SELECT 1 FROM cdk_session_bindings
+			WHERE cdk_code = ?
+			  AND (
+				(query_expires_at > 0 AND query_expires_at <= ?)
+				OR (
+					query_started_at = 0 AND query_expires_at = 0
+					AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+				)
+			  )
+		  )
+	`, code, code, nowUnix, preflightCutoff); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`
+		UPDATE cdk_session_bindings
+		SET session_payload = '', redemption_token = '', account_email = '', attempt_nonce = ''
+		WHERE cdk_code = ?
+		  AND (
+			(query_expires_at > 0 AND query_expires_at <= ?)
+			OR (
+				query_started_at = 0 AND query_expires_at = 0
+				AND COALESCE(CAST(strftime('%s', updated_at) AS INTEGER), 0) <= ?
+			)
+		  )
+	`, code, nowUnix, preflightCutoff); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // FindCodeByRedemptionToken 预检绑 session 时反查完整卡密

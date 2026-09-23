@@ -1,32 +1,50 @@
 <template>
-  <div class="min-h-screen py-12">
-    <div class="max-w-3xl mx-auto px-6">
-      <div class="mb-8 flex items-start justify-between gap-4">
-        <div>
-          <router-link to="/" class="app-link mb-4 inline-block text-sm">{{ t('common.back') }}</router-link>
-          <h1 class="text-3xl font-bold text-ink mb-1">CDK 兑换</h1>
-          <p class="text-muted text-sm">经本站转发卡台公开接口：preview → preflight → redeem → 查询结果</p>
+  <LocalRedeemView v-if="localEntryCode" :initial-code="localEntryCode" />
+  <div v-else class="redeem-page min-h-screen py-8 sm:py-12">
+    <div class="max-w-3xl mx-auto px-4 sm:px-6">
+      <header class="maple-hero mb-6 sm:mb-8">
+        <div class="maple-hero-copy">
+          <div class="maple-brand"><span class="maple-mark" aria-hidden="true">🍁</span> MaplePass</div>
+          <p class="maple-kicker">CDK REDEMPTION CENTER</p>
+          <h1>枫叶兑换站</h1>
+          <p class="maple-summary">安全核验卡密，自动提交开通请求，全程可查询处理进度。</p>
         </div>
         <div class="flex items-center gap-3">
           <LanguageToggle />
           <ThemeToggle />
         </div>
+      </header>
+
+      <div class="maple-assurance mb-6" role="note">
+        <span class="maple-assurance-icon" aria-hidden="true">✓</span>
+        <span><b>兑换前请确认账号归属。</b> 卡密仅在验证通过后提交，处理中请勿重复兑换。</span>
       </div>
 
       <RedeemModeTabs />
 
       <!-- redeem-flow v2: no public fee reference -->
       <!-- steps -->
-      <div class="card mb-6">
+      <div class="maple-steps card mb-6">
         <div class="flex gap-2 text-sm flex-wrap">
-          <span v-for="(s, i) in steps" :key="s" class="pill" :class="step === i + 1 ? 'pill-info' : ''">{{ i + 1 }}. {{ s }}</span>
+          <span v-for="(s, i) in steps" :key="s" class="maple-step" :class="{ active: step === i + 1, done: step > i + 1 }">
+            <b>{{ String(i + 1).padStart(2, '0') }}</b><span>{{ s }}</span>
+          </span>
         </div>
       </div>
 
       <!-- 1 preview -->
-      <div v-show="step === 1" class="card space-y-4">
-        <h2 class="text-xl font-bold text-ink">输入 CDK</h2>
-        <input v-model="code" class="input mono" placeholder="SXC-XXXX-XXXX-XXXX-XXXX" @keyup.enter="doPreview" />
+      <div v-show="step === 1" class="card redeem-card space-y-4">
+        <div class="redeem-card-heading">
+          <span class="redeem-card-icon" aria-hidden="true">⌁</span>
+          <div>
+            <p class="redeem-card-overline">STEP 01</p>
+            <h2 class="text-xl font-bold text-ink">输入兑换码</h2>
+          </div>
+        </div>
+        <label class="sr-only" for="cdk-code">CDK 兑换码</label>
+        <input id="cdk-code" v-model="code" class="input mono maple-code-input" placeholder="SXC-XXXX-XXXX-XXXX-XXXX" autocomplete="off" @keyup.enter="doPreview" />
+        <p class="text-xs text-muted">请粘贴完整 CDK；验证不会立即扣除卡密。</p>
+        <router-link class="app-link text-sm" to="/maple/redeem">更换未使用的本站卡密</router-link>
         <div v-if="error" class="alert alert-error">{{ error }}</div>
         <div v-if="previewInfo" class="rounded-xl bg-soft p-4 text-sm space-y-1">
           <div>套餐：<b>{{ previewInfo.plan || previewInfo.plan_type || '—' }}</b></div>
@@ -43,10 +61,24 @@
           <button type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'mailbox' }" @click="credMode = 'mailbox'">邮箱</button>
         </div>
         <template v-if="credMode === 'session'">
-          <p class="text-sm text-muted">打开
-            <a class="app-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">chatgpt.com/api/auth/session</a>
-            复制<strong>完整 JSON</strong>（必须含 <code>sessionToken</code>）。已禁用纯 Access Token。
-          </p>
+        <div style="margin-bottom: 12px; background: #fff7ed; border: 1px solid #ffedd5; border-radius: 8px; padding: 12px; font-size: 13px; color: #9a3412;">
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+            <span>💡 <strong>不知道如何获取凭证？</strong></span>
+            <a
+              href="https://chatgpt.com/api/auth/session"
+              target="_blank"
+              rel="noopener"
+              style="display: inline-block; background-color: #ea580c; color: #ffffff; text-decoration: none; padding: 6px 14px; border-radius: 6px; font-weight: bold; font-size: 13px;"
+            >
+              👉 点击一键打开凭证页面
+            </a>
+          </div>
+          <div style="margin-top: 8px; padding-top: 6px; border-top: 1px dashed #fed7aa; font-size: 12px; color: #7c2d12; line-height: 1.6;">
+            1. 确保已在官网登录，点击上方橙色按钮打开凭据页面。<br>
+            2. 在弹出的页面直接按键盘 <b>Ctrl + A</b>（全选），再按 <b>Ctrl + C</b>（复制）。<br>
+            3. 回到本页粘贴到下方输入框（必须包含完整 JSON，已禁用纯 Access Token）。
+          </div>
+        </div>
           <textarea v-model="sessionRaw" class="input h-36 font-mono text-xs" placeholder='{"user":{...},"accessToken":"eyJ...","sessionToken":"eyJ...五段JWE..."}' />
         </template>
         <template v-else>
@@ -221,14 +253,17 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import LanguageToggle from '../../components/LanguageToggle.vue'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
-import { planLabel, planSatisfied as isSatisfied } from '../../lib/plan'
+import LocalRedeemView from './LocalRedeemView.vue'
+import { normalizeLocalCode, isLocalCode } from '../../lib/local-code.mjs'
+const localEntryCode=ref('')
 
 const { t } = useI18n({ useScope: 'global' })
 const route = useRoute()
+const router = useRouter()
 const steps = ['预览', '凭证', '兑换', '结果']
 const step = ref(1)
 const busy = ref(false)
@@ -236,6 +271,7 @@ const error = ref('')
 const code = ref('')
 const previewInfo = ref<any>(null)
 const redemptionToken = ref('')
+const attemptToken = ref('')
 const preflightToken = ref('')
 const credMode = ref<'session' | 'mailbox'>('session')
 const sessionRaw = ref('')
@@ -263,9 +299,11 @@ const resultBody = ref<any>(null)
 const timeline = ref<any[]>([])
 const polling = ref(false)
 let pollTimer: any = null
+let missingPolls = 0
 const displayResultEmail = computed(() => resultEmail.value || account.value.email || '')
 
 const PROGRESS_KEY = 'cdk_redeem_progress_v1'
+const progressCreatedAt = ref(Date.now())
 const nowTick = ref(Date.now())
 let nowTimer: any = null
 
@@ -285,6 +323,7 @@ function saveProgress() {
       step: step.value,
       code: code.value,
       redemptionToken: redemptionToken.value,
+      attemptToken: attemptToken.value,
       preflightToken: preflightToken.value,
       previewInfo: previewInfo.value,
       account: account.value,
@@ -295,6 +334,7 @@ function saveProgress() {
       resultCardLastFour: resultCardLastFour.value,
       resultBody: resultBody.value,
       timeline: timeline.value,
+      createdAt: progressCreatedAt.value,
       savedAt: Date.now(),
     }
     sessionStorage.setItem(PROGRESS_KEY, JSON.stringify(payload))
@@ -309,13 +349,17 @@ function loadProgress(): boolean {
     if (!raw) return false
     const p = JSON.parse(raw)
     if (!p || typeof p !== 'object') return false
-    // 超过 7 天丢弃
-    if (p.savedAt && Date.now() - Number(p.savedAt) > 7 * 24 * 3600 * 1000) {
+    // The local recovery record has an immutable lifetime too. Polling may
+    // update savedAt for crash recovery, but must never renew createdAt.
+    const createdAt = Number(p.createdAt || p.savedAt || 0)
+    if (createdAt && Date.now() - createdAt >= 7 * 24 * 3600 * 1000) {
       sessionStorage.removeItem(PROGRESS_KEY)
       return false
     }
+    progressCreatedAt.value = createdAt || Date.now()
     if (p.code) code.value = String(p.code)
     if (p.redemptionToken) redemptionToken.value = String(p.redemptionToken)
+    if (p.attemptToken) attemptToken.value = String(p.attemptToken)
     if (p.preflightToken) preflightToken.value = String(p.preflightToken)
     if (p.previewInfo) previewInfo.value = p.previewInfo
     if (p.account && typeof p.account === 'object') {
@@ -370,7 +414,7 @@ function clearProgress() {
 }
 
 watch(
-  [step, code, redemptionToken, preflightToken, previewInfo, account, resultStatus, resultStage, resultMessage, resultBody, timeline],
+  [step, code, redemptionToken, attemptToken, preflightToken, previewInfo, account, resultStatus, resultStage, resultMessage, resultBody, timeline],
   () => saveProgress(),
   { deep: true },
 )
@@ -459,11 +503,36 @@ const alreadySatisfiedHint = computed(() => {
   return `账号已有 ${plan} 或更高套餐，本次不能重复购买。`
 })
 
-// 档位判定（可读名 / 是否已满足）抽到 lib/plan.ts：那是纯函数、有单测钉着，
-// 且「绑卡档不能被判成已满足」这条与卡台后端同源。planLabel 直接复用导入的实现；
-// planSatisfied 在这里只做一层薄封装，把「当前码的 plan_flow」喂给纯函数。
+function planLabel(value: string) {
+  const n = String(value || 'free').toLowerCase()
+  if (n.includes('prolite') || n.includes('5x') || n === 'pro_5x') return 'Pro 5x'
+  if (n.includes('20x') || n === 'pro_20x' || n === 'pro' || n === 'chatgptpro' || n.includes('pro')) return 'Pro 20x'
+  if (n.includes('plus')) return 'Plus'
+  if (n.includes('team')) return 'Team'
+  if (!n || n === 'free') return '免费版'
+  return value
+}
+
 function planSatisfied(currentPlan: string, requestedPlan: string) {
-  return isSatisfied(currentPlan, requestedPlan, previewInfo.value?.plan_flow)
+  const current = String(currentPlan || '').toLowerCase()
+  const req = String(requestedPlan || '').toLowerCase()
+  const currentRank =
+    current.includes('prolite') || current.includes('5x') || current === 'pro_5x'
+      ? 2
+      : current.includes('pro')
+        ? 3
+        : current.includes('plus')
+          ? 1
+          : 0
+  const requestedRank =
+    req === 'pro_20x' || req === 'pro' || req.includes('20x')
+      ? 3
+      : req === 'pro_5x' || req.includes('5x')
+        ? 2
+        : req === 'plus' || req.includes('plus')
+          ? 1
+          : 99
+  return currentRank >= requestedRank
 }
 
 function remainingTime(value: string, timestamp = Date.now()) {
@@ -535,7 +604,7 @@ function clearAccount() {
   }
 }
 
-const TERMINAL = new Set(['completed', 'declined', 'failed_precharge', 'cancelled', 'failed'])
+const TERMINAL = new Set(['completed', 'declined', 'failed_precharge', 'cancelled', 'failed', 'query_expired'])
 
 function isTerminal(st: string) {
   return TERMINAL.has(String(st || '').toLowerCase())
@@ -696,12 +765,11 @@ function extractSession(raw: string): string {
 }
 
 async function tryResumeByCode(cdk: string): Promise<boolean> {
-  const { r, data } = await api(
-    '/api/v1/public/cdk/result-by-code?code=' + encodeURIComponent(cdk),
-  )
+  const { r, data } = await api('/api/v1/public/cdk/result-by-code', {
+    method: 'POST',
+    body: JSON.stringify({ code: cdk }),
+  })
   if (!r.ok) return false
-  const tok = data?.redemption_token || data?.data?.redemption_token || ''
-  if (tok) redemptionToken.value = tok
   applyResultPayload(data)
   if (!resultStatus.value) resultStatus.value = data?.status || data?.order?.status || 'pending'
   step.value = 4
@@ -710,6 +778,7 @@ async function tryResumeByCode(cdk: string): Promise<boolean> {
 }
 
 async function doPreview() {
+  if (busy.value) return
   error.value = ''
   previewInfo.value = null
   if (!code.value.trim()) {
@@ -719,6 +788,12 @@ async function doPreview() {
   busy.value = true
   try {
     const cdk = code.value.trim()
+    // MAPLE- codes are issued and verified by this site. They must not be
+    // sent to the separate upstream-CDK preview endpoint.
+    if (isLocalCode(cdk)) {
+      localEntryCode.value = normalizeLocalCode(cdk)
+      return
+    }
     const { r, data } = await api('/api/v1/public/cdk/preview', {
       method: 'POST',
       body: JSON.stringify({ code: cdk }),
@@ -738,13 +813,16 @@ async function doPreview() {
     }
     // 兼容多种返回结构
     redemptionToken.value = data.redemption_token || data.data?.redemption_token || data.token || ''
+    attemptToken.value = data.attempt_token || ''
     previewInfo.value = data.data || data
-    if (!redemptionToken.value) {
+    if (!redemptionToken.value || !attemptToken.value) {
       // 有的实现把 token 放在顶层其它字段
       error.value = '未返回 redemption_token，请检查卡台 Base 配置'
       return
     }
     step.value = 2
+  } catch (e:any) {
+    error.value = e?.message || '验证暂时失败，请刷新页面重试；卡密未被使用。'
   } finally {
     busy.value = false
   }
@@ -776,6 +854,7 @@ async function doPreflight() {
       body: JSON.stringify({
         code: code.value.trim(),
         redemption_token: redemptionToken.value,
+        attempt_token: attemptToken.value,
         credential,
       }),
     })
@@ -806,6 +885,7 @@ async function doRedeem() {
       method: 'POST',
       body: JSON.stringify({
         redemption_token: redemptionToken.value,
+        attempt_token: attemptToken.value,
         preflight_token: preflightToken.value,
         client_request_id,
       }),
@@ -813,13 +893,31 @@ async function doRedeem() {
     applyResultPayload(data)
     if (!r.ok && r.status !== 202) {
       error.value = data?.error || data?.msg || data?.message || '兑换被拒绝'
+      if (r.headers.get('X-Maple-Submit-State') === 'not-submitted') {
+        // The server proved the one-way claim was not consumed. Return to
+        // account verification so the customer may retry safely later.
+        resultStatus.value = ''
+        resultMessage.value = ''
+        step.value = 2
+        return
+      }
     }
     if (!resultStatus.value) {
       resultStatus.value = r.ok || r.status === 202 ? 'queued' : 'error'
     }
     step.value = 4
     startPoll()
+  } catch {
+    // The request may already have reached the server and consumed the
+    // one-way submit latch. Never offer an automatic resubmit after a network
+    // break; switch to read-only result polling instead.
+    resultStatus.value = 'queued'
+    resultMessage.value = '提交结果待确认，正在自动查询；请勿重复提交。'
+    error.value = '网络连接中断，系统只会查询本次结果，不会重复提交付款。'
+    step.value = 4
+    startPoll()
   } finally {
+    preflightToken.value = ''
     busy.value = false
   }
 }
@@ -830,29 +928,63 @@ function startPoll() {
     polling.value = false
     return
   }
+  missingPolls = 0
   polling.value = true
   const tick = async () => {
     try {
       let r: Response
       let data: any
-      if (redemptionToken.value) {
-        ;({ r, data } = await api(
-          '/api/v1/public/cdk/result?token=' + encodeURIComponent(redemptionToken.value),
-        ))
-      } else {
-        ;({ r, data } = await api(
-          '/api/v1/public/cdk/result-by-code?code=' + encodeURIComponent(code.value.trim()),
-        ))
-        if (r.ok && data?.redemption_token) {
-          redemptionToken.value = data.redemption_token
+      if (redemptionToken.value && attemptToken.value) {
+        ;({ r, data } = await api('/api/v1/public/cdk/result', {
+          method: 'POST',
+          body: JSON.stringify({
+            redemption_token: redemptionToken.value,
+            attempt_token: attemptToken.value,
+          }),
+        }))
+        // A stale browser token must not make the customer resubmit. The CDK
+        // is the fixed seven-day recovery handle, so immediately fall back to
+        // its current immutable attempt when the token is no longer found.
+        if ((r.status === 404 || r.status === 409) && code.value.trim()) {
+          ;({ r, data } = await api('/api/v1/public/cdk/result-by-code', {
+            method: 'POST',
+            body: JSON.stringify({ code: code.value.trim() }),
+          }))
         }
+      } else {
+        ;({ r, data } = await api('/api/v1/public/cdk/result-by-code', {
+          method: 'POST',
+          body: JSON.stringify({ code: code.value.trim() }),
+        }))
       }
       if (r.ok) {
+        missingPolls = 0
+        error.value = ''
         applyResultPayload(data)
         saveProgress()
         if (isTerminal(resultStatus.value)) {
           polling.value = false
           if (pollTimer) clearInterval(pollTimer)
+        }
+      } else if (r.status === 410 || data?.status === 'query_expired') {
+        resultStatus.value = 'query_expired'
+        resultMessage.value = data?.error || '7 天查询期已结束；如需售后，请联系客服。'
+        redemptionToken.value = ''
+        attemptToken.value = ''
+        polling.value = false
+        if (pollTimer) clearInterval(pollTimer)
+        pollTimer = null
+        saveProgress()
+      } else if (r.status === 404) {
+        missingPolls += 1
+        if (missingPolls >= 20) {
+          resultStatus.value = 'review'
+          resultMessage.value = '暂未确认本次提交结果。系统已停止自动刷新，请稍后用同一张卡密查询；请勿重复提交。'
+          error.value = resultMessage.value
+          polling.value = false
+          if (pollTimer) clearInterval(pollTimer)
+          pollTimer = null
+          saveProgress()
         }
       }
     } catch {
@@ -867,7 +999,13 @@ onMounted(() => {
   nowTimer = setInterval(() => {
     nowTick.value = Date.now()
   }, 30000)
-  const q = String(route.query.cdk || route.query.code || '').trim()
+  const fromMemory = String(sessionStorage.getItem('maple:pending-redeem-cdk') || '').trim()
+  if (fromMemory) sessionStorage.removeItem('maple:pending-redeem-cdk')
+  const fromLegacyURL = String(route.query.cdk || route.query.code || '').trim()
+  const q = fromMemory || fromLegacyURL
+  // Keep old links working, but immediately remove a legacy CDK from the
+  // visible URL/history so later navigation or analytics cannot retain it.
+  if (fromLegacyURL) router.replace({ path: route.path })
   if (loadProgress()) {
     if (q && code.value.trim() !== q) {
       resetAll()
@@ -882,12 +1020,16 @@ onMounted(() => {
 
 function resetAll() {
   if (pollTimer) clearInterval(pollTimer)
+  pollTimer = null
+  missingPolls = 0
   clearProgress()
+  progressCreatedAt.value = Date.now()
   step.value = 1
   error.value = ''
   code.value = ''
   previewInfo.value = null
   redemptionToken.value = ''
+  attemptToken.value = ''
   preflightToken.value = ''
   clearAccount()
   resultBody.value = null
@@ -902,6 +1044,108 @@ function resetAll() {
 </script>
 
 <style scoped>
+.redeem-page {
+  background:
+    radial-gradient(720px 300px at 12% 0%, rgba(185, 54, 38, .12), transparent 62%),
+    radial-gradient(620px 260px at 94% 18%, rgba(232, 138, 42, .10), transparent 65%);
+}
+.maple-hero {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 188px;
+  padding: 30px 32px;
+  border: 1px solid rgba(172, 58, 39, .24);
+  border-radius: 24px;
+  color: #fff9f2;
+  background:
+    linear-gradient(112deg, rgba(58, 22, 18, .98), rgba(120, 41, 28, .96) 58%, rgba(184, 70, 33, .92)),
+    #74281f;
+  box-shadow: 0 22px 48px rgba(118, 48, 30, .22);
+}
+.maple-hero::before,
+.maple-hero::after {
+  position: absolute;
+  right: -12px;
+  color: rgba(255, 221, 164, .12);
+  font-size: 10rem;
+  line-height: 1;
+  pointer-events: none;
+  content: '🍁';
+  transform: rotate(16deg);
+}
+.maple-hero::before { top: -44px; }
+.maple-hero::after { right: 104px; bottom: -92px; font-size: 7rem; opacity: .48; transform: rotate(-18deg); }
+.maple-hero-copy,
+.maple-hero > .flex { position: relative; z-index: 1; }
+.maple-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: .02em;
+}
+.maple-mark { font-size: 22px; filter: drop-shadow(0 2px 8px rgba(0, 0, 0, .25)); }
+.maple-kicker { margin-top: 22px; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .18em; color: rgba(255, 236, 201, .76); }
+.maple-hero h1 { margin: 2px 0 6px; font-size: clamp(2rem, 5vw, 2.8rem); line-height: 1.1; color: #fffaf5; }
+.maple-summary { max-width: 430px; color: rgba(255, 239, 218, .82); font-size: 14px; }
+.maple-assurance {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 15px;
+  border: 1px solid color-mix(in srgb, #b83f2a 25%, var(--brd));
+  border-radius: 14px;
+  background: color-mix(in srgb, #b83f2a 7%, var(--surface));
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.maple-assurance b { color: var(--ink); }
+.maple-assurance-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #b83f2a;
+  color: #fff;
+  font-weight: 800;
+}
+.maple-steps { padding: 10px; }
+.maple-step {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  color: var(--ink-3);
+  font-size: 12px;
+  transition: background .18s ease, color .18s ease;
+}
+.maple-step b { font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; }
+.maple-step.active { background: #b83f2a; color: #fff; box-shadow: 0 6px 16px rgba(184, 63, 42, .23); }
+.maple-step.done { color: #2f8f6b; }
+.redeem-card { border-top: 3px solid #b83f2a; }
+.redeem-card-heading { display: flex; align-items: center; gap: 12px; }
+.redeem-card-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 13px;
+  background: #b83f2a;
+  color: #fff;
+  font-size: 24px;
+  font-weight: 700;
+}
+.redeem-card-overline { margin-bottom: 1px; color: #b83f2a; font-family: var(--font-mono); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
+.maple-code-input { padding: 14px 16px; border-color: color-mix(in srgb, #b83f2a 35%, var(--brd)); font-size: 15px; letter-spacing: .045em; }
+.maple-code-input:focus { border-color: #b83f2a; box-shadow: 0 0 0 4px rgba(184, 63, 42, .12); }
 .text-good { color: var(--good, #16a34a); }
 .text-warn { color: var(--warn, #d97706); }
 .border-primary { border-color: var(--primary) !important; }
@@ -929,6 +1173,11 @@ function resetAll() {
   word-break: break-all;
 }
 @media (max-width: 640px) {
+  .maple-hero { min-height: 0; padding: 24px 20px; border-radius: 20px; }
+  .maple-hero > .flex { gap: 6px; }
+  .maple-hero::after { display: none; }
+  .maple-kicker { margin-top: 18px; }
+  .maple-step { padding: 7px 8px; }
   .account-facts { grid-template-columns: 1fr; }
 }
 </style>

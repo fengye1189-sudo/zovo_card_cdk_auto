@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -52,13 +53,7 @@ func defaultSiteRedeemPolicy() SiteRedeemPolicy {
 	}
 }
 
-func loadSiteRedeemPolicy() SiteRedeemPolicy {
-	p := defaultSiteRedeemPolicy()
-	raw, err := db.GetSetting(siteRedeemPolicyKey)
-	if err != nil || strings.TrimSpace(raw) == "" {
-		return p
-	}
-	_ = json.Unmarshal([]byte(raw), &p)
+func normalizeSiteRedeemPolicy(p SiteRedeemPolicy) SiteRedeemPolicy {
 	if p.MaxNewAccountsPerCard <= 0 {
 		p.MaxNewAccountsPerCard = 4
 	}
@@ -67,6 +62,36 @@ func loadSiteRedeemPolicy() SiteRedeemPolicy {
 	}
 	if p.FailCooldownHours <= 0 {
 		p.FailCooldownHours = 24
+	}
+	return p
+}
+
+// loadSiteRedeemPolicyStrict is used on the public payment path. A malformed
+// or temporarily unreadable policy must stop before the one-way submit latch
+// is consumed; silently falling back here could bypass the configured card
+// protections for a real payment.
+func loadSiteRedeemPolicyStrict() (SiteRedeemPolicy, error) {
+	p := defaultSiteRedeemPolicy()
+	if db.DB == nil {
+		return p, fmt.Errorf("db not ready")
+	}
+	raw, err := db.GetSetting(siteRedeemPolicyKey)
+	if err != nil {
+		return p, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return normalizeSiteRedeemPolicy(p), nil
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return p, fmt.Errorf("decode site redeem policy: %w", err)
+	}
+	return normalizeSiteRedeemPolicy(p), nil
+}
+
+func loadSiteRedeemPolicy() SiteRedeemPolicy {
+	p, err := loadSiteRedeemPolicyStrict()
+	if err != nil {
+		return defaultSiteRedeemPolicy()
 	}
 	return p
 }

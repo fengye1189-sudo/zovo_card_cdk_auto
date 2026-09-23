@@ -21,7 +21,7 @@ func CardPlatformPing(c *gin.Context) {
 		return
 	}
 
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := cardplatform.NewIPv4HTTPClient(8 * time.Second)
 	candidates := []string{
 		cfg.OpenAPIBase() + "/balance", // 若无 key 可能 401，仍说明可达
 		base + "/health",

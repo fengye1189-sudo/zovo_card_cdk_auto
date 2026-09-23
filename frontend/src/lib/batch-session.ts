@@ -1,5 +1,3 @@
-import * as XLSX from 'xlsx'
-
 /** 批量上限：前端受理条数（并发提交，非同时跑满） */
 export const BATCH_MAX_KEYS = 1000
 export const AUTO_SUBMIT_CONCURRENCY = 6
@@ -72,7 +70,7 @@ export function parseMailboxLines(raw: string): ImportedMailbox[] {
   return out
 }
 
-/** Excel/CSV：识别邮箱 + 邮箱密码列（可不含 session） */
+/** CSV/TXT：识别邮箱 + 邮箱密码列（可不含 session） */
 export function parseMailboxesFromSheet(rows: unknown[][]): {
   mailboxes: ImportedMailbox[]
   mode: string
@@ -574,53 +572,25 @@ export async function readWorkbookRows(file: File): Promise<unknown[][]> {
   const name = (file.name || '').toLowerCase()
   if (name.endsWith('.csv') || name.endsWith('.txt')) {
     const text = await file.text()
-    const manual = parseCsvTextToRows(text)
-    if (manual.length > 0) {
-      const hasJson = manual.some((r) => r.some((c) => looksLikeSessionJson(String(c ?? ''))))
-      if (hasJson || manual[0]?.some((h) => /session|会话|token|\bat\b/i.test(String(h)))) {
-        return manual
-      }
-    }
-    try {
-      const wb = XLSX.read(text, { type: 'string', raw: false })
-      const sheetName = wb.SheetNames[0]
-      const sheet = wb.Sheets[sheetName]
-      if (sheet) {
-        return XLSX.utils.sheet_to_json(sheet, {
-          header: 1,
-          defval: '',
-          raw: false,
-        }) as unknown[][]
-      }
-    } catch {
-      /* fall through */
-    }
-    return manual
+    return parseCsvTextToRows(text)
   }
-
-  const buf = await file.arrayBuffer()
-  const wb = XLSX.read(buf, { type: 'array', cellText: true, cellDates: false })
-  const sheetName =
-    wb.SheetNames.find((n) => /数据|data|session|账号|account/i.test(n)) || wb.SheetNames[0]
-  const sheet = wb.Sheets[sheetName]
-  if (!sheet) return []
-  return XLSX.utils.sheet_to_json(sheet, {
-    header: 1,
-    defval: '',
-    raw: false,
-  }) as unknown[][]
+  throw new Error('为保护兑换凭证，当前仅支持 CSV / TXT；请先将 Excel 另存为 CSV')
 }
 
 export function exportSuccessWorkbook(
   rows: Array<[string, string, string, string]>,
   filenamePrefix = 'batch_success',
 ) {
-  const sheet = XLSX.utils.aoa_to_sheet([['邮箱', 'GPT密码', '邮箱密码', 'at'], ...rows])
-  sheet['!cols'] = [{ wch: 32 }, { wch: 24 }, { wch: 24 }, { wch: 72 }]
-  sheet['!autofilter'] = { ref: `A1:D${rows.length + 1}` }
-  const workbook = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(workbook, sheet, '账号')
-  XLSX.writeFile(workbook, `${filenamePrefix}_${Date.now()}.xlsx`, { compression: true })
+  const escape = (value: unknown) => `"${String(value ?? '').replace(/"/g, '""')}"`
+  const csv = [['邮箱', 'GPT密码', '邮箱密码', 'at'], ...rows]
+    .map((row) => row.map(escape).join(','))
+    .join('\r\n')
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${filenamePrefix}_${Date.now()}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
 }
 
 export async function mapPool<T, R>(

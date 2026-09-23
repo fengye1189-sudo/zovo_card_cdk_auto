@@ -15,7 +15,7 @@
     <input
       ref="fileInputRef"
       type="file"
-      accept=".xlsx,.xls,.csv"
+      accept=".csv,.txt"
       class="hidden"
       @change="onChange"
     />

@@ -22,6 +22,61 @@ func hasEnabledSelectionRules() bool {
 	return false
 }
 
+type publicRedeemPolicySnapshot struct {
+	policy         SiteRedeemPolicy
+	hasRules       bool
+	blockedCardIDs []int64
+}
+
+// loadPublicRedeemPolicySnapshot reads every local card-safety input before a
+// payment attempt is claimed. Any read/decode failure is fail-closed: the
+// caller can retry safely because no submit latch has been consumed yet.
+func loadPublicRedeemPolicySnapshot() (*publicRedeemPolicySnapshot, error) {
+	policy, err := loadSiteRedeemPolicyStrict()
+	if err != nil {
+		return nil, err
+	}
+	rules, err := db.GetCardSelectionRules()
+	if err != nil {
+		return nil, err
+	}
+	hasRules := false
+	for _, rule := range rules {
+		if rule.Enabled && strings.TrimSpace(rule.PlanKey) != "" {
+			hasRules = true
+			break
+		}
+	}
+	blockedCardIDs, err := db.ListActiveBlockedCardIDs()
+	if err != nil {
+		return nil, err
+	}
+	return &publicRedeemPolicySnapshot{
+		policy:         policy,
+		hasRules:       hasRules,
+		blockedCardIDs: append([]int64(nil), blockedCardIDs...),
+	}, nil
+}
+
+func applyPublicRedeemPolicySnapshot(body map[string]any, snapshot *publicRedeemPolicySnapshot) {
+	if body == nil || snapshot == nil {
+		return
+	}
+	if snapshot.policy.Enabled {
+		body["no_auto_card_switch"] = snapshot.policy.NoAutoCardSwitch
+	}
+	if snapshot.policy.Enabled || snapshot.hasRules {
+		if snapshot.policy.Enabled {
+			body["strict_card_preference"] = snapshot.policy.StrictCardPreference
+		} else {
+			body["strict_card_preference"] = true
+		}
+	}
+	if len(snapshot.blockedCardIDs) > 0 {
+		body["exclude_card_ids"] = append([]int64(nil), snapshot.blockedCardIDs...)
+	}
+}
+
 func cardProductUsable(code string, products []db.CardProductCache) bool {
 	code = strings.TrimSpace(code)
 	if code == "" {
