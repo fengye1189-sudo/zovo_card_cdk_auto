@@ -24,8 +24,8 @@
     <details v-if="auth.can('system.manage')" class="card" :open="!settings.enabled">
       <summary class="font-bold cursor-pointer">充值通道：{{ settings.enabled ? '已开启' : '未开启（仍可生成和验证卡密）' }}</summary>
       <div class="space-y-4 mt-4">
-        <p v-if="settings.pro_dedicated_enabled" class="alert alert-info">Pro 专卡模式已配置：客户确认后新开 P5378OX；Pro 5X 初始充值 $120，Pro 20X 初始充值 $150。对应升级由卡台确认成功后，卡片自动加入 Plus / Go 随机支付池。首次成功使用 2 次后冷静 2 天，再允许最后 2 次成功付款；Go 成功不计入次数。达到销卡条件后是否自动销卡，以“自动化”页面的开关为准。</p>
-        <p class="text-sm text-muted">普通 Plus 卡从下方已勾选卡中均衡随机选择：有多张可用卡时避开上一张，并优先从累计选择次数较少的卡中随机。首次随机分配 3～5 次 Plus 成功上限，达到后冷静 2 天，再允许最后 2 次成功付款。出现 1 次上游明确拒付也进入待销状态。Go 共用同一卡池和冷静状态，但 Go 成功不计入 Plus 次数。</p>
+        <p v-if="settings.pro_dedicated_enabled" class="alert alert-info">Pro 专卡模式已配置：客户确认后新开 P5378OX；Pro 5X 初始充值 $120，Pro 20X 初始充值 $150。对应升级由卡台确认成功后，卡片自动加入 Plus / Go 随机支付池；不设成功次数上限，也没有 2 天冷静期。达到安全销卡条件后是否自动销卡，以“自动化”页面的开关为准。</p>
+        <p class="text-sm text-muted">普通 Plus / Go 卡从下方已勾选且符合付款条件的卡中随机选择；不设成功次数上限，也没有 2 天冷静期。系统仍会避开有在途订单、待核对资金或余额不足的卡；出现 1 次上游明确拒付则进入待销状态。</p>
         <p>API 密钥：{{ configured ? '已配置' : '未配置，请前往通道对接页面设置' }}</p>
         <div class="rounded-xl border border-orange-300 bg-orange-50/70 p-4 flex flex-wrap items-center justify-between gap-3">
           <div class="text-sm"><p><strong>白名单与通道设置</strong><span v-if="draftNotice" class="ml-2 text-orange-700">· {{ draftConflict ? '旧草稿与服务器版本冲突，请放弃草稿后重新修改' : '有未保存修改，已保留本机草稿' }}</span><span v-else class="ml-2 text-muted">· 已与服务器同步</span></p><p v-if="savedAt" class="mt-1 text-muted">最近保存：{{ savedAt }}</p><p v-if="error" data-channel-save-error class="mt-2 text-red-700">{{ error }}</p></div>
@@ -61,7 +61,7 @@
           <label>允许的报价币种<input v-model="settings.currency" class="input mt-2" placeholder="填写真实报价币种" maxlength="3" /></label>
           <label>单笔订阅金额上限（最小货币单位）<input v-model.number="settings.max_amount_minor" type="number" min="1" class="input mt-2" /></label>
           <label>单笔 API 服务费上限（美分）<input v-model.number="settings.max_fee_minor" type="number" min="0" class="input mt-2" /></label>
-          <p class="text-sm text-muted">本站只在卡台权威确认 Plus 开通成功后计成功次数；只有明确拒付才计拒付次数。首次达到上限后，Plus、Go 与自动补款暂停 2 天；之后只再允许 2 次成功付款。结果不明、验证码或查询失败不会触发销卡。</p>
+          <p class="text-sm text-muted">本站只记录卡台权威确认的成功付款与明确拒付，用于追踪卡片表现；成功次数不再限制后续用卡。符合实时付款条件的卡将随机使用，不设 2 天冷静期。结果不明、验证码或查询失败不会触发销卡。</p>
         </div>
         <p class="text-sm text-muted">例如 100 美分 = 1 美元。订阅金额单位以通道报价为准，不能把不同币种混用；两项上限不含另外的开卡、充值及汇兑费用。</p>
         <p class="text-sm text-muted">一旦提交付款，无论失败或结果不明，都不会自动换卡再付。多张卡的余额不能合并；待核对订单需先查清资金结果。</p>

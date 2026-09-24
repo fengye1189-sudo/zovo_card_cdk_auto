@@ -13,7 +13,7 @@
         <div class="card"><p class="text-sm text-muted">数据库 / 后台任务</p><p class="text-xl font-semibold mt-2">{{ report.database_ok && report.heartbeat_ok ? '运行正常' : '需要检查' }}</p><p class="hint">最近心跳：{{ date(report.heartbeat) }}</p><p class="hint">数据库 {{ bytes(report.database_bytes) }}</p></div>
         <div class="card"><p class="text-sm text-muted">近 24 小时提交的订单</p><p class="text-2xl font-semibold mt-2">{{ report.submitted_24h }}</p><p class="hint">已成功 {{ report.completed_24h_cohort }} · 未完成 {{ report.failed_24h_cohort }}</p><p class="hint">当前完成比例 {{ successRate }}%</p></div>
         <div class="card"><p class="text-sm text-muted">处理中 / 待核对</p><p class="text-2xl font-semibold mt-2">{{ report.outstanding }}</p><p class="hint">超过 30 分钟 {{ report.overdue }} · 需人工核对 {{ report.review }}</p><router-link to="/ops/orders" class="text-primary text-sm">查看订单</router-link></div>
-        <div class="card"><p class="text-sm text-muted">支付卡池</p><p class="text-2xl font-semibold mt-2">{{ report.candidate_cards }} <span class="text-sm font-normal">张本地候选卡</span></p><p class="hint">池内 {{ report.selected_cards }} · 暂停或待销 {{ report.capped_cards }}</p><p class="hint">首次普通卡 3～5 次、Pro 2 次；冷静 2 天后最后 2 次</p></div>
+        <div class="card"><p class="text-sm text-muted">支付卡池</p><p class="text-2xl font-semibold mt-2">{{ report.candidate_cards }} <span class="text-sm font-normal">张本地候选卡</span></p><p class="hint">池内 {{ report.selected_cards }} · 暂停或待销 {{ report.capped_cards }}</p><p class="hint">符合实时付款条件的卡随机使用；无成功次数上限和 2 天冷静期</p></div>
       </div>
       <p class="text-sm text-muted">近 24 小时订单按后台首次跟进时间统计，完成比例为这批订单当前已完成的比例；未结束的订单会继续变化。</p>
 
