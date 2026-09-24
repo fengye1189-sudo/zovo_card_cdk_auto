@@ -22,6 +22,7 @@ type autoFixture struct {
 	status, renewal, request, product, rechargeStatus string
 	balance, minimum                                  float64
 	empty, fail, restricted, incomplete, unavailable  bool
+	duplicateRecharge                                 bool
 	willRenew                                         *bool
 	extraCandidates                                   []any
 }
@@ -106,7 +107,12 @@ func newAutoFixture(t *testing.T) *autoFixture {
 		case "/openapi/v1/cards/123/recharges":
 			data = []any{}
 			if at := a.topupAt.Load(); at > 0 {
-				data = []any{gin.H{"id": 901, "card_id": 123, "status": a.rechargeStatus, "amount": float64(a.topupAmount.Load()) / 100, "created_at": time.Unix(0, at).UTC().Format(time.RFC3339Nano)}}
+				entry := gin.H{"id": 901, "card_id": 123, "status": a.rechargeStatus, "amount": float64(a.topupAmount.Load()) / 100, "created_at": time.Unix(0, at).UTC().Format(time.RFC3339Nano)}
+				data = []any{entry}
+				if a.duplicateRecharge {
+					duplicate := gin.H{"id": 902, "card_id": 123, "status": a.rechargeStatus, "amount": float64(a.topupAmount.Load()) / 100, "created_at": time.Unix(0, at).Add(time.Minute).UTC().Format(time.RFC3339Nano)}
+					data = append(data.([]any), duplicate)
+				}
 			}
 		case "/openapi/v1/cards/open":
 			a.money.Add(1)
@@ -416,6 +422,26 @@ func TestAutomationUnknownTopupRequiresAndAcceptsExactLedgerEvidence(t *testing.
 	}
 }
 
+func TestAutomationUnknownTopupAcceptsUniqueDelayedLedgerEvidence(t *testing.T) {
+	a := newAutoFixture(t)
+	p := moneyPolicy()
+	putAutoPolicy(t, p)
+	now := time.Now()
+	a.topupAmount.Store(1578)
+	a.topupAt.Store(now.UnixNano())
+	if _, err := db.DB.Exec(`INSERT INTO automation_money
+		(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
+		VALUES('delayed-unknown','topup',123,1578,1578,500,?,'unknown',?)`, financeScope(), now.Add(-15*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	dueAgain()
+	maintainAutomationCards(context.Background())
+	var state string
+	if err := db.DB.QueryRow("SELECT state FROM automation_money WHERE id='delayed-unknown'").Scan(&state); err != nil || state != "balance_verified" || automationBlocked() {
+		t.Fatal("unique delayed ledger did not clear unknown funding", state, err)
+	}
+}
+
 func TestAutomationTopupLedgerRejectsUntrustedEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -424,6 +450,7 @@ func TestAutomationTopupLedgerRejectsUntrustedEvidence(t *testing.T) {
 		{name: "wrong amount", adjust: func(a *autoFixture) { a.topupAmount.Store(999) }},
 		{name: "failed status", adjust: func(a *autoFixture) { a.rechargeStatus = "failed" }},
 		{name: "outside operation window", adjust: func(a *autoFixture) { a.topupAt.Store(time.Now().Add(-time.Hour).UnixNano()) }},
+		{name: "duplicate exact evidence", adjust: func(a *autoFixture) { a.duplicateRecharge = true }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := newAutoFixture(t)
