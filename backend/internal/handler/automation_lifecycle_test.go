@@ -9,16 +9,16 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-func TestFirstExactDeclineQueuesRetirementOnce(t *testing.T) {
+func TestTwoDistinctEmailDeclinesQueueRetirementOnce(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
-	if err := recordAutomationDecline(1, 123, "requires_action", now); err != nil {
+	if err := recordAutomationDecline(1, 123, "first@example.com", "requires_action", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordAutomationDecline(1, 123, "declined", now); err != nil {
+	if err := recordAutomationDecline(1, 123, "first@example.com", "declined", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordAutomationDecline(1, 123, "declined", now+1); err != nil {
+	if err := recordAutomationDecline(1, 123, "first@example.com", "declined", now+1); err != nil {
 		t.Fatal(err)
 	}
 	var declines int
@@ -26,7 +26,25 @@ func TestFirstExactDeclineQueuesRetirementOnce(t *testing.T) {
 	if err := db.DB.QueryRow("SELECT decline_count,retire_state,retire_reason FROM automation_card_lifecycle WHERE card_id=123").Scan(&declines, &state, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if declines != 1 || state != "queued" || reason != "one_decline" {
+	if declines != 1 || state != "active" || reason != "" {
+		t.Fatal("one email incorrectly queued retirement", declines, state, reason)
+	}
+	if err := recordAutomationDecline(2, 123, " FIRST@example.com ", "failed_precharge", now+2); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.QueryRow("SELECT decline_count,retire_state,retire_reason FROM automation_card_lifecycle WHERE card_id=123").Scan(&declines, &state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if declines != 2 || state != "active" || reason != "" {
+		t.Fatal("same normalized email incorrectly queued retirement", declines, state, reason)
+	}
+	if err := recordAutomationDecline(3, 123, "second@example.com", "declined", now+3); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.QueryRow("SELECT decline_count,retire_state,retire_reason FROM automation_card_lifecycle WHERE card_id=123").Scan(&declines, &state, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if declines != 3 || state != "queued" || reason != "two_distinct_email_declines" {
 		t.Fatal("wrong decline retirement state", declines, state, reason)
 	}
 }
@@ -39,7 +57,7 @@ func TestAutomaticRetirementIsSafeAndIdempotent(t *testing.T) {
 			p.Topup, p.Open, p.Retire = false, false, true
 			putAutoPolicy(t, p)
 			now := time.Now().Unix()
-			if _, err := db.DB.Exec("INSERT OR REPLACE INTO automation_card_lifecycle(card_id,product_code,bin,phase,decline_count,retire_state,retire_reason,created_at,updated_at) VALUES(123,'TEST','537872','final',1,'queued','one_decline',?,?)", now, now); err != nil {
+			if _, err := db.DB.Exec("INSERT OR REPLACE INTO automation_card_lifecycle(card_id,product_code,bin,phase,decline_count,retire_state,retire_reason,created_at,updated_at) VALUES(123,'TEST','537872','primary',2,'queued','two_distinct_email_declines',?,?)", now, now); err != nil {
 				t.Fatal(err)
 			}
 			if mode == "unknown" {

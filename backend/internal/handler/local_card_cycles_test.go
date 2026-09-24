@@ -96,18 +96,25 @@ func TestNoCooldownMigrationRunsIdempotently(t *testing.T) {
 	}
 }
 
-func TestExactDeclineStillRemovesCardFromRandomPool(t *testing.T) {
+func TestTwoDistinctEmailDeclinesRemoveCardFromRandomPool(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
 	if _, err := ensureLocalCardCycle(123, "ordinary", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordAutomationDecline(1, 123, "declined", now); err != nil {
+	if err := recordAutomationDecline(1, 123, "first@example.com", "declined", now); err != nil {
 		t.Fatal(err)
 	}
 	ok, err := localCardHasCycleCapacity(123, "ordinary", now)
+	if err != nil || !ok {
+		t.Fatal("one-email decline removed card", ok, err)
+	}
+	if err := recordAutomationDecline(2, 123, "second@example.com", "failed_precharge", now+1); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = localCardHasCycleCapacity(123, "ordinary", now+1)
 	if err != nil || ok {
-		t.Fatal("declined card remained eligible", ok, err)
+		t.Fatal("two-email declined card remained eligible", ok, err)
 	}
 }
 

@@ -61,8 +61,37 @@ func productCost(p cardplatform.AutomationProduct, amount int64, open bool) (int
 const legacyInventoryAlert = "无法完整核查卡余额，已跳过自动补款与开卡。卡片超过 100 张时需要调整扫描方案。"
 const automationReadyCardFloor = 2
 
-func shouldOpenAutomationCard(ready int) bool {
-	return ready <= automationReadyCardFloor
+func shouldOpenAutomationCard(ready, activeOrdinary int) bool {
+	return ready <= automationReadyCardFloor && activeOrdinary <= automationReadyCardFloor
+}
+
+// activeOrdinaryAutomationCards is an absolute opening guard. A card that is
+// active but temporarily excluded by balance, selection or an upstream
+// eligibility check must still prevent an endless series of replacement card
+// openings. Dedicated Pro cards and the prepared 5X reserve are excluded.
+func activeOrdinaryAutomationCards(inventory []cardplatform.CardChoice) (int, error) {
+	count := 0
+	for _, card := range inventory {
+		if card.ID <= 0 || card.Status != "ACTIVE" {
+			continue
+		}
+		var dedicated, heldFor5x, reserve int
+		if err := db.DB.QueryRow(`SELECT COUNT(*)
+			FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
+			WHERE p.card_id=? AND NOT (p.state='completed' AND c.plan='pro_5x' AND c.status='consumed')`, card.ID).Scan(&dedicated); err != nil {
+			return 0, err
+		}
+		if err := db.DB.QueryRow("SELECT COUNT(*) FROM pro5x_card_policy WHERE card_id=? AND completed_uses<?", card.ID, pro5xUsesBeforePlusPool).Scan(&heldFor5x); err != nil {
+			return 0, err
+		}
+		if err := db.DB.QueryRow("SELECT COUNT(*) FROM pro5x_card_reserve WHERE card_id=? AND state<>'empty'", card.ID).Scan(&reserve); err != nil {
+			return 0, err
+		}
+		if dedicated+heldFor5x+reserve == 0 {
+			count++
+		}
+	}
+	return count, nil
 }
 
 type inventoryScanError struct{ reason string }
@@ -302,6 +331,10 @@ func maintainAutomationCards(ctx context.Context) {
 			}
 		}
 	}
+	activeOrdinary, activeErr := activeOrdinaryAutomationCards(inventory)
+	if activeErr != nil {
+		return
+	}
 	action := ""
 	openProduct := p.Product
 	openBIN, selectionMode := "", ""
@@ -362,7 +395,7 @@ func maintainAutomationCards(ctx context.Context) {
 			break
 		}
 	}
-	if action == "" && p.Open && shouldOpenAutomationCard(len(ready)) {
+	if action == "" && p.Open && shouldOpenAutomationCard(len(ready), activeOrdinary) {
 		// An opened but not enrolled card must not cause an endless sequence of new cards.
 		rows, e := db.DB.Query("SELECT result_card_id FROM automation_money WHERE action='open' AND result_card_id>0 AND scope=?", scope)
 		if e != nil {

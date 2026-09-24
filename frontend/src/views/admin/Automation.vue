@@ -20,8 +20,8 @@
         <p class="text-sm text-muted mb-4">GPTPRO5x卡冲升级与 Pro 20X 商品在 <router-link class="app-link" to="/ops/products">商品与套餐</router-link>管理。客户确认兑换后分别为专卡初充 $120 / $150；两者共用过去 24 小时预算、每日开卡数量及平台余额保留额，普通卡的单次 $22 资金上限不用于 Pro 专卡。未确认到账不会提交升级付款。</p>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <el-form-item label="自动补充已勾选卡的余额"><el-switch v-model="settings.topup_enabled" /><p class="hint">付款结果已确认且余额低于阈值时可再次补款；有在途或待核对订单、资金未确认时不补款。仍受每日预算和单次上限限制；5X 专卡完成 3 次 5X 后才进入 Plus 池。</p></el-form-item>
-          <el-form-item label="达到条件后自动销卡并退回余额"><el-switch v-model="settings.retire_enabled" /><p class="hint">不再按成功次数或 2 天冷静期自动销卡；出现 1 次上游明确拒付时才进入待销。销卡前会确认没有在途订单或待核对资金，结果不明时不会重复提交。</p></el-form-item>
-          <el-form-item label="可用卡剩余 2 张时提前开卡"><el-switch v-model="settings.open_enabled" /><p class="hint">可用卡剩余 2 张时自动补开 1 张，恢复到 3 张；到账核查期间或已有自动开卡尚未被勾选时，不会重复开卡。仍受预算和每日开卡上限限制。</p></el-form-item>
+          <el-form-item label="达到条件后自动销卡并退回余额"><el-switch v-model="settings.retire_enabled" /><p class="hint">不再按成功次数或 2 天冷静期自动销卡；同一卡至少两个不同邮箱出现上游明确拒付后才进入待销。销卡前会确认没有在途订单或待核对资金，结果不明时不会重复提交。</p></el-form-item>
+          <el-form-item label="可用卡剩余 2 张时提前开卡"><el-switch v-model="settings.open_enabled" /><p class="hint">仅当可立即付款的普通卡不超过 2 张，并且全部激活普通卡也不超过 2 张时，才自动补开 1 张；已有较多激活卡时不会因临时余额、名单或上游资格问题继续开新卡。仍受预算和每日开卡上限限制。</p></el-form-item>
           <el-form-item label="自动选择高成功率卡头"><el-switch v-model="settings.auto_product_enabled" /><p class="hint">卡头先分为“星链卡”和“渠道1”，再按具体 BIN 统计近 30 天成功率。自动开卡每 5 次有 4 次选择统计分最高的卡头，1 次兼顾两种类型并优先试用新出现或样本最少的合格卡头。</p></el-form-item>
           <el-form-item label="自动开出的卡允许加入支付名单"><el-switch v-model="settings.enroll_created_cards" /><p class="hint">仅适用于本站自动开卡，确认到账后加入；其他新卡不会自动勾选。</p></el-form-item>
           <el-form-item v-for="field in moneyFields" :key="field.key" :label="field.label+'（USD）'"><el-input-number :model-value="(settings[field.key] || 0)/100" @update:model-value="value=>settings[field.key]=Math.round((value || 0)*100)" :min="0" :max="1000000" :precision="2" :step="1" /><p class="hint">{{ field.hint }}</p></el-form-item>

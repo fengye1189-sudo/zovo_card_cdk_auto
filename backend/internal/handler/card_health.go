@@ -86,7 +86,7 @@ func normalizeAccountEmail(email string) string {
 	return email
 }
 
-// ObserveCardOrderOutcome 观察一笔终态订单，更新失败统计；坏卡则拉黑并可选冻结。
+// ObserveCardOrderOutcome 观察一笔终态订单，仅统计权威明确拒付；坏卡则在本站拉黑。
 // 可从 webhook / result 轮询 / 管理端手动触发。
 func ObserveCardOrderOutcome(ctx context.Context, in CardOrderObservation) *CardHealthObserveResult {
 	res := &CardHealthObserveResult{}
@@ -110,8 +110,8 @@ func ObserveCardOrderOutcome(ctx context.Context, in CardOrderObservation) *Card
 		res.Verdict = "success"
 		return res
 	}
-	// 仅失败终态
-	if status != "failed_precharge" && status != "declined" && status != "failed" {
+	// 只有上游权威明确拒付才计入。普通 failed 可能是网络、会话或配置问题，不能用于销卡判定。
+	if status != "failed_precharge" && status != "declined" {
 		res.Verdict = "ignored_status"
 		return res
 	}
@@ -443,7 +443,7 @@ func AdminGetCardHealthPolicy(c *gin.Context) {
 	p := loadCardHealthPolicy()
 	c.JSON(http.StatusOK, gin.H{
 		"policy": p,
-		"note":   "同卡失败达到阈值后：多邮箱→判卡问题并冻结；单邮箱→判邮箱/号问题不冻卡",
+		"note":   "同卡至少两个不同邮箱出现明确拒付后进入安全销卡退款；单邮箱拒付不销卡，本站不冻结卡台侧卡片",
 	})
 }
 

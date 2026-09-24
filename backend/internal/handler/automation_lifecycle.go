@@ -21,6 +21,15 @@ type automationProductScore struct {
 	Attempts int64
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func automationCardType(issuer string) string {
 	raw := strings.ToLower(strings.TrimSpace(issuer))
 	switch raw {
@@ -95,8 +104,9 @@ func recordAutomationOutcome(localID, cardID int64, upstreamState string, now in
 }
 
 // recordAutomationDecline counts only exact, authoritative card declines. The
-// local_id uniqueness makes repeated polling idempotent.
-func recordAutomationDecline(localID, cardID int64, upstreamState string, now int64) error {
+// local_id uniqueness makes repeated polling idempotent. Retirement requires
+// declines from at least two distinct, known account emails.
+func recordAutomationDecline(localID, cardID int64, accountEmail, upstreamState string, now int64) error {
 	if upstreamState != "declined" && upstreamState != "failed_precharge" {
 		return nil
 	}
@@ -109,8 +119,12 @@ func recordAutomationDecline(localID, cardID int64, upstreamState string, now in
 	 VALUES(?,?,?)`, cardID, now, now); err != nil {
 		return err
 	}
-	result, err := tx.Exec(`INSERT OR IGNORE INTO automation_card_declines(local_id,card_id,status,recorded_at)
-	 VALUES(?,?,?,?)`, localID, cardID, upstreamState, now)
+	email := normalizeAccountEmail(accountEmail)
+	if email == "unknown" {
+		email = ""
+	}
+	result, err := tx.Exec(`INSERT OR IGNORE INTO automation_card_declines(local_id,card_id,status,email_norm,recorded_at)
+	 VALUES(?,?,?,?,?)`, localID, cardID, upstreamState, email, now)
 	if err != nil {
 		return err
 	}
@@ -119,10 +133,11 @@ func recordAutomationDecline(localID, cardID int64, upstreamState string, now in
 		return err
 	}
 	if inserted == 1 {
-		_, err = tx.Exec(`UPDATE automation_card_lifecycle SET decline_count=decline_count+1,
-		 retire_state=CASE WHEN decline_count+1>=1 AND retire_state='active' THEN 'queued' ELSE retire_state END,
-		 retire_reason=CASE WHEN decline_count+1>=1 AND retire_state='active' THEN 'one_decline' ELSE retire_reason END,
-		 updated_at=? WHERE card_id=?`, now, cardID)
+		_, err = tx.Exec(`UPDATE automation_card_lifecycle SET
+		 decline_count=(SELECT COUNT(*) FROM automation_card_declines WHERE card_id=?),
+		 retire_state=CASE WHEN retire_state='active' AND (SELECT COUNT(DISTINCT email_norm) FROM automation_card_declines WHERE card_id=? AND TRIM(email_norm)<>'')>=2 THEN 'queued' ELSE retire_state END,
+		 retire_reason=CASE WHEN retire_state='active' AND (SELECT COUNT(DISTINCT email_norm) FROM automation_card_declines WHERE card_id=? AND TRIM(email_norm)<>'')>=2 THEN 'two_distinct_email_declines' ELSE retire_reason END,
+		 updated_at=? WHERE card_id=?`, cardID, cardID, cardID, now, cardID)
 		if err != nil {
 			return err
 		}

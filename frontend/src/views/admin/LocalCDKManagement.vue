@@ -25,7 +25,7 @@
       <summary class="font-bold cursor-pointer">充值通道：{{ settings.enabled ? '已开启' : '未开启（仍可生成和验证卡密）' }}</summary>
       <div class="space-y-4 mt-4">
         <p v-if="settings.pro_dedicated_enabled" class="alert alert-info">Pro 专卡模式已配置：客户确认后准备 P5378OX；Pro 5X 专卡连续完成 3 次 5X 升级后才加入 Plus / Go 随机支付池，期间自动补回 5X 所需余额；Pro 20X 仍为独立专卡。进入普通池后不设成功次数上限，也没有 2 天冷静期。达到安全销卡条件后是否自动销卡，以“自动化”页面的开关为准。</p>
-        <p class="text-sm text-muted">普通 Plus / Go 卡从下方已勾选且符合付款条件的卡中随机选择；不设成功次数上限，也没有 2 天冷静期。系统仍会避开有在途订单、待核对资金或余额不足的卡；出现 1 次上游明确拒付则进入待销状态。</p>
+        <p class="text-sm text-muted">普通 Plus / Go 卡从下方已勾选且符合付款条件的卡中随机选择；不设成功次数上限，也没有 2 天冷静期。系统仍会避开有在途订单、待核对资金或余额不足的卡；同一卡至少两个不同邮箱出现明确拒付后才进入待销状态。</p>
         <p>API 密钥：{{ configured ? '已配置' : '未配置，请前往通道对接页面设置' }}</p>
         <div class="rounded-xl border border-orange-300 bg-orange-50/70 p-4 flex flex-wrap items-center justify-between gap-3">
           <div class="text-sm"><p><strong>白名单与通道设置</strong><span v-if="draftNotice" class="ml-2 text-orange-700">· {{ draftConflict ? '旧草稿与服务器版本冲突，请放弃草稿后重新修改' : '有未保存修改，已保留本机草稿' }}</span><span v-else class="ml-2 text-muted">· 已与服务器同步</span></p><p v-if="savedAt" class="mt-1 text-muted">最近保存：{{ savedAt }}</p><p v-if="error" data-channel-save-error class="mt-2 text-red-700">{{ error }}</p></div>

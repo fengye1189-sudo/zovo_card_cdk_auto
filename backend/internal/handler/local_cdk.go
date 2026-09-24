@@ -797,10 +797,11 @@ func refreshLocalOrder(c *gin.Context, r localCode) localCode {
 	}
 	var response struct {
 		Order struct {
-			ID          int64  `json:"id"`
-			RequestID   string `json:"client_request_id"`
-			Status      string `json:"status"`
-			CompletedAt string `json:"completed_at"`
+			ID           int64  `json:"id"`
+			RequestID    string `json:"client_request_id"`
+			Status       string `json:"status"`
+			AccountEmail string `json:"account_email"`
+			CompletedAt  string `json:"completed_at"`
 		} `json:"order"`
 	}
 	if json.Unmarshal(raw, &response) != nil || response.Order.ID != r.Upstream || response.Order.RequestID != r.Request {
@@ -823,7 +824,7 @@ func refreshLocalOrder(c *gin.Context, r localCode) localCode {
 	if e == nil {
 		if outcomeErr := recordAutomationOutcome(r.ID, r.CardID, response.Order.Status, now); outcomeErr != nil {
 			autoAlert("card_lifecycle", 0, "卡片成功率记录暂时失败；不会因此销卡，后台稍后继续核对。")
-		} else if declineErr := recordAutomationDecline(r.ID, r.CardID, response.Order.Status, now); declineErr != nil {
+		} else if declineErr := recordAutomationDecline(r.ID, r.CardID, firstNonEmpty(response.Order.AccountEmail, r.Email), response.Order.Status, now); declineErr != nil {
 			autoAlert("card_lifecycle", 0, "卡片拒付次数记录暂时失败；不会因此销卡，后台稍后继续核对。")
 		} else {
 			autoResolve("card_lifecycle")

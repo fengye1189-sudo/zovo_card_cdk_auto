@@ -50,7 +50,7 @@
 
       <section class="card space-y-3">
         <h2 class="text-lg font-semibold">每张卡的使用次数</h2>
-        <p class="hint">表中次数只统计当前阶段权威确认成功的 Plus；Go 不计次。首次达到上限后暂停 2 天，再进入最后 2 次阶段；出现 1 次上游明确拒付也会待销。</p>
+        <p class="hint">成功次数只用于统计，不限制后续用卡，也没有 2 天冷静期；同一卡至少两个不同邮箱出现权威明确拒付后才会待销。</p>
         <el-table :data="report.cards" empty-text="尚未设置支付白名单">
           <el-table-column prop="id" label="卡片 ID" min-width="120" />
           <el-table-column label="类型" min-width="110"><template #default="{ row }">{{ row.kind==='pro' ? 'Pro 入池卡' : '普通池卡' }}</template></el-table-column>
