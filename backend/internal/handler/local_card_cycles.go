@@ -9,6 +9,7 @@ import (
 // Card selection is lifetime-balanced and random. There is no success-count
 // cap or cooldown; the stored counter is retained only for reporting.
 const localCardUnlimitedLimit = 2147483647
+const pro5xUsesBeforePlusPool = 3
 
 type localCardCycle struct {
 	Kind          string
@@ -26,8 +27,19 @@ func randomOrdinaryCardLimit() (int, error) {
 // cards. Any Pro association that is not authoritatively completed remains
 // isolated, even if an old settings draft still contains that card ID.
 func localCardKind(cardID int64, configured bool) (string, bool, error) {
+	var pro5xUses int
+	err := db.DB.QueryRow("SELECT completed_uses FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&pro5xUses)
+	if err == nil {
+		if pro5xUses < pro5xUsesBeforePlusPool {
+			return "", false, nil
+		}
+		return "ordinary", true, nil
+	}
+	if err != sql.ErrNoRows {
+		return "", false, err
+	}
 	var state, plan, status string
-	err := db.DB.QueryRow(`SELECT p.state,COALESCE(c.plan,''),COALESCE(c.status,'')
+	err = db.DB.QueryRow(`SELECT p.state,COALESCE(c.plan,''),COALESCE(c.status,'')
 	 FROM pro_dedicated_orders p LEFT JOIN local_cdks c ON c.id=p.local_id
 	 WHERE p.card_id=?`, cardID).Scan(&state, &plan, &status)
 	if err == sql.ErrNoRows {
@@ -110,6 +122,24 @@ func localPoolCards(s localSettings, now int64) ([]int64, map[int64]string, erro
 	 FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
 	 WHERE p.card_id>0 AND p.state IN ('submitted','completed')
 	 AND c.plan IN ('pro_5x','pro_20x') AND c.status='consumed' ORDER BY p.local_id`)
+	if err != nil {
+		return nil, nil, err
+	}
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil && !configured[id] {
+			ordered = append(ordered, id)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	if err = rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	rows, err = db.DB.Query(`SELECT card_id FROM pro5x_card_policy
+	 WHERE completed_uses>=? ORDER BY updated_at,card_id`, pro5xUsesBeforePlusPool)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -266,6 +296,24 @@ func recordAuthoritativeLocalStatusWithCompletion(localID int64, state, message,
 		if state == "consumed" && cardID > 0 {
 			kind, limit := "pro", localCardUnlimitedLimit
 			if plan == "pro_5x" {
+				if _, err = tx.Exec(`INSERT INTO pro5x_card_policy(card_id,completed_uses,created_at,updated_at)
+				 VALUES(?,1,?,?) ON CONFLICT(card_id) DO UPDATE SET
+				 completed_uses=pro5x_card_policy.completed_uses+1,updated_at=excluded.updated_at`, cardID, now, now); err != nil {
+					return err
+				}
+				var uses int
+				if err = tx.QueryRow("SELECT completed_uses FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&uses); err != nil {
+					return err
+				}
+				// Free the one-active-dedicated-order slot so the same physical card
+				// can serve the next 5X order. The local order retains card_id as the
+				// immutable usage history.
+				if _, err = tx.Exec("UPDATE pro_dedicated_orders SET card_id=NULL WHERE local_id=? AND state='completed'", localID); err != nil {
+					return err
+				}
+				if uses < pro5xUsesBeforePlusPool {
+					return tx.Commit()
+				}
 				kind = "ordinary"
 			}
 			_, err = tx.Exec(`INSERT INTO local_card_cycles(card_id,card_kind,success_limit,success_count,cycle_started_at,cooldown_until,updated_at)

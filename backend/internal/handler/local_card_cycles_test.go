@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -109,28 +111,42 @@ func TestExactDeclineStillRemovesCardFromRandomPool(t *testing.T) {
 	}
 }
 
-func TestPro5xCompletionReleasesDedicatedCardWithoutUsageCap(t *testing.T) {
+func TestPro5xCardEntersPlusPoolAfterThreeCompletedUses(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
-	if _, err := db.DB.Exec("INSERT INTO local_cdks(id,code_hash,prefix,plan,status,expires_at,created_at,card_id) VALUES(1,'pro5x-history','PRO5X-ABCD','pro_5x','reserved',?,?,789)", now+86400, now); err != nil {
-		t.Fatal(err)
+	for use := int64(1); use <= pro5xUsesBeforePlusPool; use++ {
+		if _, err := db.DB.Exec("INSERT INTO local_cdks(id,code_hash,prefix,plan,status,expires_at,created_at,card_id) VALUES(?,?,?,'pro_5x','reserved',?,?,789)", use, fmt.Sprintf("pro5x-history-%d", use), "PRO5X-ABCD", now+86400, now); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.DB.Exec("INSERT INTO pro_dedicated_orders(local_id,card_id,money_id,state,created_at) VALUES(?,789,?,'submitted',?)", use, fmt.Sprintf("pro5x-money-%d", use), now); err != nil {
+			t.Fatal(err)
+		}
+		if err := recordAuthoritativeLocalStatus(use, "consumed", "done", now+use); err != nil {
+			t.Fatal(err)
+		}
+		var completed int
+		if err := db.DB.QueryRow("SELECT completed_uses FROM pro5x_card_policy WHERE card_id=789").Scan(&completed); err != nil || completed != int(use) {
+			t.Fatal("wrong completed-use counter", completed, err)
+		}
+		var heldCard sql.NullInt64
+		if err := db.DB.QueryRow("SELECT card_id FROM pro_dedicated_orders WHERE local_id=?", use).Scan(&heldCard); err != nil || heldCard.Valid {
+			t.Fatal("completed order retained the reusable card slot", heldCard, err)
+		}
+		ids, kinds, err := localPoolCards(localSettings{}, now+use)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if use < pro5xUsesBeforePlusPool && len(ids) != 0 {
+			t.Fatal("Pro 5X card entered Plus pool before third use", use, ids)
+		}
+		if use == pro5xUsesBeforePlusPool && (len(ids) != 1 || ids[0] != 789 || kinds[789] != "ordinary") {
+			t.Fatal("third-use Pro 5X card did not enter shared pool", ids, kinds)
+		}
 	}
-	if _, err := db.DB.Exec("INSERT INTO pro_dedicated_orders(local_id,card_id,money_id,state,created_at) VALUES(1,789,'pro5x-money','submitted',?)", now); err != nil {
-		t.Fatal(err)
-	}
-	if ids, _, err := localPoolCards(localSettings{}, now); err != nil || len(ids) != 0 {
-		t.Fatal("unfinished Pro 5X card entered pool", ids, err)
-	}
-	if err := recordAuthoritativeLocalStatus(1, "consumed", "done", now); err != nil {
-		t.Fatal(err)
-	}
-	var state, kind string
+	var kind string
 	var limit int
-	if err := db.DB.QueryRow("SELECT p.state,c.card_kind,c.success_limit FROM pro_dedicated_orders p JOIN local_card_cycles c ON c.card_id=p.card_id WHERE p.local_id=1").Scan(&state, &kind, &limit); err != nil || state != "completed" || kind != "ordinary" || limit != localCardUnlimitedLimit {
-		t.Fatal("successful Pro 5X card did not enter unlimited pool", state, kind, limit, err)
-	}
-	if ids, kinds, err := localPoolCards(localSettings{}, now); err != nil || len(ids) != 1 || ids[0] != 789 || kinds[789] != "ordinary" {
-		t.Fatal("successful Pro 5X card did not enter shared pool", ids, kinds, err)
+	if err := db.DB.QueryRow("SELECT card_kind,success_limit FROM local_card_cycles WHERE card_id=789").Scan(&kind, &limit); err != nil || kind != "ordinary" || limit != localCardUnlimitedLimit {
+		t.Fatal("third-use Pro 5X card did not enter unlimited pool", kind, limit, err)
 	}
 }
 

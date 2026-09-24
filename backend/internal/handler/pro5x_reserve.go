@@ -105,7 +105,7 @@ func reconcilePro5xReserve(inventory []cardplatform.CardChoice) {
 // maintainPro5xReserve keeps one verified USD 100 card available. It returns
 // true when it initiated an upstream opening, so the caller performs no other
 // money operation in the same automation cycle.
-func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, p automationPolicy, policyVersion int64, scope string, productMap map[string]cardplatform.AutomationProduct, now int64) bool {
+func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, inventory []cardplatform.CardChoice, p automationPolicy, policyVersion int64, scope string, productMap map[string]cardplatform.AutomationProduct, now int64) bool {
 	settings := settingsForLocalPlan(readLocalSettings(), "pro_5x")
 	if !settings.Enabled || !settings.ProDedicatedEnabled || !p.Sync || p.Paused || !p.Open || p.First == "" || p.Last == "" || p.DailyBudget <= 0 || p.DailyOpen <= 0 {
 		return false
@@ -113,6 +113,128 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, p autom
 	reserve, err := loadPro5xReserve()
 	if err != nil || reserve.State != "empty" {
 		return false
+	}
+	// A newly governed 5X card stays dedicated for three successful 5X
+	// upgrades. Between uses, refill the same card to $100 instead of opening a
+	// replacement or releasing it into the Plus pool.
+	rows, err := db.DB.Query(`SELECT card_id FROM pro5x_card_policy
+		WHERE completed_uses>0 AND completed_uses<? ORDER BY updated_at DESC,card_id`, pro5xUsesBeforePlusPool)
+	if err != nil {
+		return false
+	}
+	reuseID := int64(0)
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) != nil {
+			continue
+		}
+		for _, card := range inventory {
+			if card.ID == id && card.Status == "ACTIVE" {
+				reuseID = id
+				break
+			}
+		}
+		if reuseID > 0 {
+			break
+		}
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return false
+	}
+	if err = rows.Close(); err != nil {
+		return false
+	}
+	if reuseID > 0 {
+		var card cardplatform.CardChoice
+		for _, candidate := range inventory {
+			if candidate.ID == reuseID {
+				card = candidate
+				break
+			}
+		}
+		balance, balanceOK := usdMinor(card.Balance)
+		if !balanceOK || balance > pro5xInitialMinor {
+			autoAlert("pro5x_reserve", 0, fmt.Sprintf("Pro 5X 三次专用卡 #%d 的余额无法核对，未开新卡也未补款。", reuseID))
+			return true
+		}
+		if balance == pro5xInitialMinor {
+			result, updateErr := db.DB.Exec(`UPDATE pro5x_card_reserve
+				SET card_id=?,money_id='',state='ready',created_at=?,updated_at=?
+				WHERE id=1 AND state='empty'`, reuseID, now, now)
+			if changed, _ := result.RowsAffected(); updateErr == nil && changed == 1 {
+				autoResolve("pro5x_reserve")
+				return true
+			}
+			return false
+		}
+		amount := pro5xInitialMinor - balance
+		product, ok := productMap[card.Product]
+		cost, costOK := productCost(product, amount, false)
+		if !ok || !costOK || product.RechargeFee == nil || *product.RechargeFee != 0 {
+			autoAlert("pro5x_reserve", 0, fmt.Sprintf("Pro 5X 三次专用卡 #%d 的补款费率或金额限制不符合规则，未补款。", reuseID))
+			return true
+		}
+		spendable, spendErr := cli.AutomationSpendable(ctx)
+		wallet, walletOK := usdMinor(spendable)
+		if spendErr != nil || !walletOK || wallet-cost < p.WalletFloor {
+			autoAlert("pro5x_reserve", 0, fmt.Sprintf("平台可消费余额不足以补充 Pro 5X 三次专用卡 #%d，未补款。", reuseID))
+			return true
+		}
+		operationID, randomErr := localRandom()
+		if randomErr != nil {
+			return false
+		}
+		operationID = "pro5x-reserve-topup-" + operationID
+		dailyBudget := p.DailyBudget
+		if dailyBudget > proDailyMaximum {
+			dailyBudget = proDailyMaximum
+		}
+		tx, txErr := db.DB.Begin()
+		if txErr != nil {
+			return false
+		}
+		defer tx.Rollback()
+		result, txErr := tx.Exec(`INSERT INTO automation_money
+			(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
+			SELECT ?,'pro5x_reserve_topup',?,?,?,?,?,'inflight',?
+			WHERE COALESCE((SELECT SUM(reserved_minor) FROM automation_money WHERE created_at>?),0)+?<=?
+			AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending'))
+			AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?)
+			AND EXISTS(SELECT 1 FROM pro5x_card_reserve WHERE id=1 AND state='empty')`,
+			operationID, reuseID, amount, cost, balance, scope, now, now-86400, cost, dailyBudget, policyVersion)
+		if txErr != nil {
+			return false
+		}
+		changed, _ := result.RowsAffected()
+		if changed != 1 {
+			autoAlert("pro5x_reserve", 0, "Pro 5X 三次专用卡受每日预算或待核对资金操作限制，本轮未补款。")
+			return true
+		}
+		result, txErr = tx.Exec(`UPDATE pro5x_card_reserve
+			SET card_id=?,money_id=?,state='funding',created_at=?,updated_at=?
+			WHERE id=1 AND state='empty'`, reuseID, operationID, now, now)
+		if txErr != nil {
+			return false
+		}
+		changed, _ = result.RowsAffected()
+		if changed != 1 || tx.Commit() != nil {
+			return false
+		}
+		rechargeErr := cli.AutomationRecharge(ctx, reuseID, amount, operationID)
+		state := "pending"
+		if rechargeErr != nil {
+			state = "unknown"
+		}
+		_, _ = db.DB.Exec("UPDATE automation_money SET state=? WHERE id=?", state, operationID)
+		if state == "unknown" {
+			_, _ = db.DB.Exec("UPDATE pro5x_card_reserve SET state='review',updated_at=? WHERE id=1 AND money_id=?", time.Now().Unix(), operationID)
+			autoAlert("pro5x_reserve", 0, "Pro 5X 三次专用卡补款结果不明，请到 Zovo 核对；系统不会自动重试。")
+		} else {
+			autoResolve("pro5x_reserve")
+		}
+		db.WriteAudit("automation", "pro5x_reserve_topup", fmt.Sprintf("operation=%s card=%d amount_minor=%d reserved_minor=%d result=%s", operationID, reuseID, amount, cost, state), "")
+		return true
 	}
 	product, ok := productMap[pro5xReserveProduct]
 	if !ok {

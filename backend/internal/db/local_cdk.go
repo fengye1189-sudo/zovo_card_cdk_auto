@@ -82,6 +82,10 @@ func InitLocalCDK() error {
   created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
  );
  INSERT OR IGNORE INTO pro5x_card_reserve(id) VALUES(1);
+ CREATE TABLE IF NOT EXISTS pro5x_card_policy (
+  card_id INTEGER PRIMARY KEY, completed_uses INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+ );
  CREATE TABLE IF NOT EXISTS local_card_cycles (
  card_id INTEGER PRIMARY KEY,
  card_kind TEXT NOT NULL CHECK(card_kind IN ('ordinary','pro')),

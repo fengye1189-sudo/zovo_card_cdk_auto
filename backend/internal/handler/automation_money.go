@@ -197,7 +197,7 @@ func maintainAutomationCards(ctx context.Context) {
 	if p.Retire && processQueuedCardRetirement(ctx, cli, inventory, scope, version, now) {
 		return
 	}
-	if maintainPro5xReserve(ctx, cli, p, version, scope, productMap, now) {
+	if maintainPro5xReserve(ctx, cli, inventory, p, version, scope, productMap, now) {
 		return
 	}
 	if (!p.Topup && !p.Open) || !readLocalSettings().Enabled {
@@ -238,12 +238,26 @@ func maintainAutomationCards(ctx context.Context) {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	// A completed Philippines Pro 5X card becomes an ordinary Plus card. It is
-	// eligible for the same balance maintenance even though it is intentionally
-	// not written into the administrator's static card selection setting.
+	// Grandfathered 5X cards keep their prior behavior. Cards governed by the
+	// three-use policy are added only after their third completed 5X upgrade.
 	rows, selectErr := db.DB.Query(`SELECT p.card_id
 		FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
 		WHERE p.card_id>0 AND p.state='completed' AND c.plan='pro_5x' AND c.status='consumed'`)
+	if selectErr != nil {
+		return
+	}
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			selected[id] = true
+		}
+	}
+	if rows.Err() != nil {
+		rows.Close()
+		return
+	}
+	rows.Close()
+	rows, selectErr = db.DB.Query("SELECT card_id FROM pro5x_card_policy WHERE completed_uses>=?", pro5xUsesBeforePlusPool)
 	if selectErr != nil {
 		return
 	}
@@ -300,6 +314,11 @@ func maintainAutomationCards(ctx context.Context) {
 				WHERE p.card_id=? AND NOT (p.state='completed' AND c.plan='pro_5x' AND c.status='consumed')`, card.ID).Scan(&dedicated); err != nil {
 				return
 			}
+			var heldFor5x int
+			if err := db.DB.QueryRow("SELECT COUNT(*) FROM pro5x_card_policy WHERE card_id=? AND completed_uses<?", card.ID, pro5xUsesBeforePlusPool).Scan(&heldFor5x); err != nil {
+				return
+			}
+			dedicated += heldFor5x
 			if dedicated > 0 {
 				continue
 			}
@@ -526,7 +545,7 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 				break
 			}
 		}
-		if !matched && op.action == "topup" {
+		if !matched && (op.action == "topup" || op.action == "pro5x_reserve_topup") {
 			// The card may be spent or archived before the next inventory scan. A
 			// successful, exact recharge ledger entry is authoritative evidence
 			// that the accepted request completed even if the current balance no
@@ -631,7 +650,11 @@ func reconcileCreatedCardEnrollment(inventory []cardplatform.CardChoice, p autom
 		FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
 		WHERE p.card_id>0 AND p.state='completed'
 		AND c.plan='pro_5x' AND c.status='consumed'
-	) ORDER BY card_id`)
+		UNION
+		SELECT card_id
+		FROM pro5x_card_policy
+		WHERE completed_uses>=?
+	) ORDER BY card_id`, pro5xUsesBeforePlusPool)
 	if err != nil {
 		autoAlert("enrollment", 0, "无法核对本站新开卡的支付名单，本轮未改动名单；稍后自动重试。")
 		return
