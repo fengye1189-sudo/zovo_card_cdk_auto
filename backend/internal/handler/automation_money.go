@@ -563,17 +563,30 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 			entries, _, ledgerErr := cardplatform.New(currentConfig).FinancePage(ctx, "recharge", op.card, 1)
 			cancel()
 			if ledgerErr == nil {
+				maxDelay := int64((15 * time.Minute).Seconds())
+				if op.state == "unknown" {
+					// Some provider timeouts finish asynchronously many hours later.
+					// Keep the recovery window bounded and require a unique exact
+					// card/amount/status match so an unrelated manual top-up cannot
+					// silently release the safety lock.
+					maxDelay = int64((24 * time.Hour).Seconds())
+				}
+				matches := []cardplatform.FinanceEntry{}
 				for _, entry := range entries {
 					at, parseErr := time.Parse(time.RFC3339Nano, entry.At)
 					status := strings.ToLower(strings.TrimSpace(entry.Status))
 					if parseErr != nil || entry.ID <= 0 || entry.Amount == nil || *entry.Amount != op.amount ||
 						(status != "success" && status != "succeeded" && status != "completed") ||
-						at.Unix() < op.at-30 || at.Unix() > op.at+15*60 {
+						at.Unix() < op.at-30 || at.Unix() > op.at+maxDelay {
 						continue
 					}
+					matches = append(matches, entry)
+				}
+				if len(matches) == 1 {
+					entry := matches[0]
 					tx, txErr := db.DB.Begin()
 					if txErr != nil {
-						break
+						continue
 					}
 					if _, txErr = tx.Exec(`INSERT INTO automation_money_evidence(operation_id,scope,source,upstream_id,confirmed_at)
 						 VALUES(?,?,?,?,?)`, op.id, op.scope, "card_recharge", entry.ID, now); txErr == nil {
@@ -596,7 +609,6 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 						matched = true
 						db.WriteAudit("automation", "money_ledger_verified", fmt.Sprintf("operation=%s source=card_recharge upstream=%d", op.id, entry.ID), "")
 					}
-					break
 				}
 			}
 		}
