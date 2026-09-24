@@ -176,13 +176,9 @@ func maintainAutomationCards(ctx context.Context) {
 	}
 	var uncertain int
 	_ = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','unknown')").Scan(&uncertain)
-	if uncertain > 0 {
-		autoAlert("money", 0, "存在结果未确认的资金操作，已阻止新的资金操作与充值；请先在 Zovo 核对，本站不会自动重试。")
-		return
-	}
 	var pending int
 	_ = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state='pending'").Scan(&pending)
-	if pending == 0 && (p.Paused || (!p.Topup && !p.Open && !p.Retire) || (!readLocalSettings().Enabled && !p.Retire)) {
+	if pending == 0 && uncertain == 0 && (p.Paused || (!p.Topup && !p.Open && !p.Retire) || (!readLocalSettings().Enabled && !p.Retire)) {
 		return
 	}
 	scopeConfig := cardplatform.LoadConfig()
@@ -194,12 +190,20 @@ func maintainAutomationCards(ctx context.Context) {
 		return
 	}
 	verifyMoneyOperationsForScope(inventory, p, scope)
+	if uncertain > 0 {
+		var remaining int
+		_ = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','unknown')").Scan(&remaining)
+		if remaining > 0 {
+			autoAlert("money", 0, "存在结果未确认的资金操作，已阻止新的资金操作与充值；请先在 Zovo 核对，本站不会自动重试。")
+			return
+		}
+	}
 	reconcilePro5xReserve(inventory)
 	reconcileCreatedCardEnrollment(inventory, p)
 	// A pending provider-accepted money operation is only reconciled in this
 	// cycle. Even when it is confirmed, defer any new funding decision until the
 	// next cycle so one delayed observation cannot trigger back-to-back spending.
-	if pending > 0 {
+	if pending > 0 || uncertain > 0 {
 		return
 	}
 	if automationBlocked() {
@@ -544,18 +548,18 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 		return
 	}
 	now := time.Now().Unix()
-	rows, e := db.DB.Query("SELECT id,action,card_id,result_card_id,before_minor,amount_minor,created_at,scope FROM automation_money WHERE state='pending' AND created_at<?", now-120)
+	rows, e := db.DB.Query("SELECT id,action,card_id,result_card_id,before_minor,amount_minor,created_at,scope,state FROM automation_money WHERE state IN ('pending','unknown') AND created_at<?", now-120)
 	if e != nil {
 		return
 	}
 	type pendingOp struct {
-		id, action, scope                string
+		id, action, scope, state         string
 		card, result, before, amount, at int64
 	}
 	ops := []pendingOp{}
 	for rows.Next() {
 		var op pendingOp
-		if rows.Scan(&op.id, &op.action, &op.card, &op.result, &op.before, &op.amount, &op.at, &op.scope) == nil {
+		if rows.Scan(&op.id, &op.action, &op.card, &op.result, &op.before, &op.amount, &op.at, &op.scope, &op.state) == nil {
 			ops = append(ops, op)
 		}
 	}
@@ -571,11 +575,16 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 			target = op.result
 		}
 		matched := false
-		for _, card := range inventory {
-			balance, ok := usdMinor(card.Balance)
-			if card.ID == target && card.Status == "ACTIVE" && ok && balance >= op.before+op.amount {
-				matched = true
-				break
+		// A provider-accepted pending request may be confirmed by its expected
+		// post-recharge balance. An unknown request is stricter: a later unrelated
+		// top-up could also raise the balance, so require an exact ledger entry.
+		if op.state == "pending" {
+			for _, card := range inventory {
+				balance, ok := usdMinor(card.Balance)
+				if card.ID == target && card.Status == "ACTIVE" && ok && balance >= op.before+op.amount {
+					matched = true
+					break
+				}
 			}
 		}
 		if !matched && (op.action == "topup" || op.action == "pro5x_reserve_topup") {
@@ -602,7 +611,7 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 					if _, txErr = tx.Exec(`INSERT INTO automation_money_evidence(operation_id,scope,source,upstream_id,confirmed_at)
 						 VALUES(?,?,?,?,?)`, op.id, op.scope, "card_recharge", entry.ID, now); txErr == nil {
 						var result sql.Result
-						result, txErr = tx.Exec("UPDATE automation_money SET state='balance_verified' WHERE id=? AND state='pending'", op.id)
+						result, txErr = tx.Exec("UPDATE automation_money SET state='balance_verified' WHERE id=? AND state IN ('pending','unknown')", op.id)
 						if txErr == nil {
 							var changed int64
 							changed, txErr = result.RowsAffected()
@@ -633,7 +642,7 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 		var changed int64
 		if op.action != "topup" || !moneyOperationHasEvidence(op.id) {
 			var result sql.Result
-			result, e = db.DB.Exec("UPDATE automation_money SET state='balance_verified' WHERE id=? AND state='pending'", op.id)
+			result, e = db.DB.Exec("UPDATE automation_money SET state='balance_verified' WHERE id=? AND state IN ('pending','unknown')", op.id)
 			if e != nil {
 				continue
 			}

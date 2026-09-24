@@ -50,7 +50,14 @@ func TestRepeatTopupAfterVerifiedPayment(t *testing.T) {
 			}
 			dueAgain()
 			maintainAutomationCards(context.Background())
-			if a.money.Load() != want {
+			wantAfterReconcile := want
+			if mode == "unknown" {
+				// Exact ledger evidence safely resolves the old unknown top-up.
+				// The reconciliation cycle itself never pays again; a later cycle may
+				// perform a normal top-up when the fresh balance is still below target.
+				wantAfterReconcile = 2
+			}
+			if a.money.Load() != wantAfterReconcile {
 				t.Fatal("duplicate while pending")
 			}
 		})

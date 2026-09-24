@@ -392,6 +392,30 @@ func TestAutomationTopupLedgerConfirmsAfterCardLeavesInventory(t *testing.T) {
 	}
 }
 
+func TestAutomationUnknownTopupRequiresAndAcceptsExactLedgerEvidence(t *testing.T) {
+	a := newAutoFixture(t)
+	p := moneyPolicy()
+	putAutoPolicy(t, p)
+	now := time.Now()
+	a.topupAmount.Store(1578)
+	a.topupAt.Store(now.UnixNano())
+	if _, err := db.DB.Exec(`INSERT INTO automation_money
+		(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
+		VALUES('unknown-ledger','topup',123,1578,1578,500,?,'unknown',?)`, financeScope(), now.Unix()-180); err != nil {
+		t.Fatal(err)
+	}
+	dueAgain()
+	maintainAutomationCards(context.Background())
+	var state string
+	if err := db.DB.QueryRow("SELECT state FROM automation_money WHERE id='unknown-ledger'").Scan(&state); err != nil || state != "balance_verified" || automationBlocked() {
+		t.Fatal("exact ledger did not clear unknown funding", state, err)
+	}
+	var evidence int
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM automation_money_evidence WHERE operation_id='unknown-ledger' AND source='card_recharge'").Scan(&evidence); err != nil || evidence != 1 {
+		t.Fatal("unknown funding evidence missing", evidence, err)
+	}
+}
+
 func TestAutomationTopupLedgerRejectsUntrustedEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
