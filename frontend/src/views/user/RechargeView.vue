@@ -110,7 +110,7 @@
             </div>
             <div>
               <dt>当前套餐</dt>
-              <dd>{{ planLabel(account.currentPlan) }}</dd>
+              <dd>{{ planLabel(effectiveCurrentPlan(account.currentPlan, account.subscriptionHasActive)) }}</dd>
             </div>
             <div>
               <dt>订阅状态</dt>
@@ -241,9 +241,18 @@
 
         <div v-if="error" class="alert alert-error">{{ error }}</div>
         <div v-if="isTerminal(resultStatus) && resultStatus !== 'completed'" class="alert alert-error">
-          兑换未成功。若状态为 review/pending 请勿重复提交；可联系发码方或稍后用同一设备再查结果。
+          <template v-if="resultCanRetry">
+            本次兑换未成功，卡密已经恢复，可以重新提交。失败记录仍会保留，方便继续查询。
+          </template>
+          <template v-else>
+            本次兑换未成功，结果已经保留。为避免重复付款，当前只允许继续查询，不会重复提交；核对完成后状态会自动更新。
+          </template>
+          <div v-if="resultQueryUntil" class="mt-1">可使用同一卡密查询至 {{ fmtTime(resultQueryUntil) }}。</div>
         </div>
         <div v-if="resultStatus === 'completed'" class="alert alert-success">开通完成，请到 ChatGPT 账号确认套餐。</div>
+        <button v-if="resultCanRetry" class="btn-primary" :disabled="busy" @click="retryCurrentCode">
+          {{ busy ? '重新检查中…' : '使用这张卡密重新提交' }}
+        </button>
         <button class="btn-secondary" @click="resetAll">再兑一张</button>
       </div>
     </div>
@@ -259,6 +268,7 @@ import ThemeToggle from '../../components/ThemeToggle.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 import LocalRedeemView from './LocalRedeemView.vue'
 import { normalizeLocalCode, isLocalCode } from '../../lib/local-code.mjs'
+import { effectiveCurrentPlan, resultCanResubmit, resultQueryDeadline } from '../../lib/redemption-display.mjs'
 const localEntryCode=ref('')
 
 const { t } = useI18n({ useScope: 'global' })
@@ -420,6 +430,8 @@ watch(
 )
 
 const resultPretty = computed(() => JSON.stringify(resultBody.value, null, 2))
+const resultCanRetry = computed(() => resultCanResubmit(resultBody.value))
+const resultQueryUntil = computed(() => resultQueryDeadline(resultBody.value))
 
 const targetPlan = computed(() =>
   String(previewInfo.value?.plan || previewInfo.value?.plan_type || '').toLowerCase(),
@@ -777,6 +789,13 @@ async function tryResumeByCode(cdk: string): Promise<boolean> {
   return true
 }
 
+async function retryCurrentCode() {
+  const current = code.value.trim()
+  resetAll()
+  code.value = current
+  await doPreview()
+}
+
 async function doPreview() {
   if (busy.value) return
   error.value = ''
@@ -800,13 +819,12 @@ async function doPreview() {
     })
     if (!r.ok) {
       const msg = data?.error || data?.msg || data?.message || 'CDK 无效或不可用'
-      // 已兑换：尝试用本站绑定恢复进度，而不是卡在第一步
-      if (/已兑换|已使用|used|redeemed|consumed|已消耗/i.test(String(msg))) {
-        const ok = await tryResumeByCode(cdk)
-        if (ok) {
-          error.value = ''
-          return
-        }
+      // 任何预览失败都先只读查询本站已有尝试。这样明确失败、待核对
+      // 和已使用的卡密都能恢复原进度，而不是停在第一步看起来被锁死。
+      const ok = await tryResumeByCode(cdk)
+      if (ok) {
+        error.value = ''
+        return
       }
       error.value = msg
       return
