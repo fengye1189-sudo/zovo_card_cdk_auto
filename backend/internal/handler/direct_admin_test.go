@@ -36,6 +36,20 @@ func TestDirectAdminReadMasking(t *testing.T){
  w:=httptest.NewRecorder();f.router.ServeHTTP(w,httptest.NewRequest("GET","/orders/78",nil));if w.Code!=502{t.Fatal("mismatched order accepted")}
  if posts.Load()!=0{t.Fatal("read mutated upstream")}
 }
+func TestDirectAdminMergesSignedWebhookOrders(t *testing.T){
+ f,_:=directFixture(t,"completed","success",false)
+ if _,err:=db.DB.Exec(`CREATE TABLE IF NOT EXISTS webhook_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,event_type TEXT NOT NULL,idem_key TEXT NOT NULL UNIQUE,
+  payload TEXT NOT NULL,processed INTEGER NOT NULL DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+ )`);err!=nil{t.Fatal(err)}
+ payload:=`{"event":"gpt_direct.completed","order_id":88,"status":"completed","account_email":"web@example.com","product":"gpt","plan":"plus","session":"must-not-leak","card_number":"5378721234569999"}`
+ if err:=db.InsertWebhookEvent("gpt_direct.completed","gpt_direct.completed|order|88",payload);err!=nil{t.Fatal(err)}
+ w:=httptest.NewRecorder();f.router.ServeHTTP(w,httptest.NewRequest("GET","/orders",nil))
+ if w.Code!=200{t.Fatal(w.Code,w.Body.String())}
+ body:=w.Body.String()
+ if !strings.Contains(body,`"id":88`)||!strings.Contains(body,`"synced_only":true`)||!strings.Contains(body,"web@example.com"){t.Fatal("synced web order missing",body)}
+ if strings.Contains(body,"must-not-leak")||strings.Contains(body,"5378721234569999"){t.Fatal("webhook secret leaked")}
+}
 func TestDirectAdminActionGuards(t *testing.T){
  for _,tc:=range []struct{status,renewal,action string;allowed bool}{
   {"queued","","cancel",true},{"awaiting_card","","cancel",true},{"funding_pending","","cancel",true},

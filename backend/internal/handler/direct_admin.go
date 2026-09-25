@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
  "errors"
  "fmt"
  "strconv"
@@ -23,7 +24,29 @@ func directReadError(c *gin.Context,e error) {
 func AdminDirectOrders(c *gin.Context) {
  c.Header("Cache-Control","no-store")
  page,e:=strconv.Atoi(c.DefaultQuery("page","1"));if e!=nil || page<1 || page>10000 {localError(c,400,"页码不正确");return}
- data,e:=cardplatform.NewFromSettings().DirectOrderList(c.Request.Context(),page);if e!=nil{directReadError(c,e);return};c.JSON(200,data)
+ data,e:=cardplatform.NewFromSettings().DirectOrderList(c.Request.Context(),page);if e!=nil{directReadError(c,e);return}
+	// Zovo's list endpoint intentionally returns only orders created by the
+	// current API user. Merge signed webhook facts separately so web-console
+	// upgrades and orders from an older key still appear without pretending
+	// they can be operated through the current key.
+	apiIDs:=map[int64]bool{}
+	if list,ok:=data["list"].([]map[string]any);ok {for _,order:=range list {if id:=anyToInt64(order["id"]);id>0 {apiIDs[id]=true}}}
+	synced:=[]map[string]any{}
+	seen:=map[int64]bool{}
+	if events,err:=db.ListDirectOrderWebhookEvents(1000);err==nil {for _,event:=range events {
+		var payload map[string]any
+		if json.Unmarshal([]byte(event.Payload),&payload)!=nil {continue}
+		id:=anyToInt64(payload["order_id"]);if id<=0 {id=anyToInt64(payload["id"])}
+		if id<=0 || apiIDs[id] || seen[id] {continue};seen[id]=true
+		payload["id"]=float64(id)
+		if _,ok:=payload["status"];!ok && event.EventType=="gpt_direct.completed" {payload["status"]="completed"}
+		if _,ok:=payload["created_at"];!ok {payload["created_at"]=event.CreatedAt}
+		order:=cardplatform.PublicDirectOrder(payload);order["id"]=id;order["synced_only"]=true;order["source"]="zovo_webhook"
+		synced=append(synced,order)
+		if len(synced)>=100 {break}
+	}}
+	data["synced"]=synced;data["synced_total"]=len(synced)
+	c.JSON(200,data)
 }
 func directID(c *gin.Context) (int64,bool) {id,e:=strconv.ParseInt(c.Param("id"),10,64);if e!=nil || id<=0 {localError(c,400,"订单编号不正确");return 0,false};return id,true}
 func AdminDirectDetail(c *gin.Context) {

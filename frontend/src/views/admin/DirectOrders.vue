@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-4">
     <div class="flex flex-wrap justify-between items-center gap-3">
-      <div><h1 class="text-2xl font-bold text-ink">充值订单</h1><p class="text-sm text-muted mt-2">本 API 账号的直充订单；Zovo 网页端的历史订单可能不在此列表。</p></div>
+      <div><h1 class="text-2xl font-bold text-ink">充值订单</h1><p class="text-sm text-muted mt-2">同步显示当前 API 账号订单，以及签名 Webhook 已确认的 Zovo 网页直接升级订单。</p></div>
       <el-button :loading="loading" :disabled="acting" @click="load(page)">刷新订单</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
@@ -12,13 +12,13 @@
       </div>
       <p class="text-sm text-muted">金额区分预估与最终金额；充值成功不代表已关闭续费，服务费状态也不等于卡片扣款状态。</p>
       <el-table :data="visibleRows" v-loading="loading" empty-text="暂无符合条件的订单；没有真实充值时，列表为空是正常的。" stripe>
-        <el-table-column label="账号 / 订单" min-width="210"><template #default="{row}"><div>{{ row.account_email || row.email || '上游未返回账号' }}</div><div class="text-sm text-muted">#{{ row.id }} · {{ row.client_request_id || '—' }}</div></template></el-table-column>
+        <el-table-column label="账号 / 订单" min-width="210"><template #default="{row}"><div>{{ row.account_email || row.email || '上游未返回账号' }}</div><div class="text-sm text-muted">#{{ row.id }} · {{ row.client_request_id || '—' }}</div><el-tag v-if="row.synced_only" size="small" type="info">Zovo 网页同步</el-tag></template></el-table-column>
         <el-table-column label="卡片 / 套餐" min-width="140"><template #default="{row}"><div>{{ row.card_last_four ? '•••• '+row.card_last_four : '尾号未返回' }}</div><div class="text-sm text-muted">{{ row.product || 'GPT' }} / {{ row.plan || '—' }}</div></template></el-table-column>
         <el-table-column label="充值状态" min-width="140"><template #default="{row}"><el-tag :type="tone(row.status)">{{ status(row.status) }}</el-tag><div class="text-sm text-muted mt-1">{{ row.stage || '' }}</div></template></el-table-column>
         <el-table-column label="金额" min-width="155"><template #default="{row}"><div>{{ money(row.final_amount_minor,row.currency) }}</div><div class="text-sm text-muted">预估 {{ money(row.quoted_amount_minor,row.currency) }}</div></template></el-table-column>
         <el-table-column label="自动续费" min-width="140"><template #default="{row}"><el-tag :type="row.renewal_status==='success'?'success':'info'">{{ renewal(row.renewal_status) }}</el-tag></template></el-table-column>
         <el-table-column label="提交时间 / 耗时" min-width="190"><template #default="{row}"><div>{{ date(row.created_at) }}</div><div class="text-sm text-muted">{{ duration(row) }}</div></template></el-table-column>
-        <el-table-column label="操作" width="110" fixed="right"><template #default="{row}"><el-button link type="primary" :disabled="detailLoading || acting" @click="open(row.id)">查看详情</el-button></template></el-table-column>
+        <el-table-column label="操作" width="110" fixed="right"><template #default="{row}"><span v-if="row.synced_only" class="text-sm text-muted">只读同步</span><el-button v-else link type="primary" :disabled="detailLoading || acting" @click="open(row.id)">查看详情</el-button></template></el-table-column>
       </el-table>
       <div class="flex flex-wrap items-center justify-between gap-3"><span class="text-sm text-muted">共 {{ total }} 条 · 第 {{ page }} 页 · 搜索和筛选仅作用于本页</span><div class="flex gap-2"><el-button :disabled="page<=1 || loading || acting" @click="load(page-1)">上一页</el-button><el-button :disabled="page*20>=total || loading || acting" @click="load(page+1)">下一页</el-button></div></div>
     </div>
@@ -62,7 +62,7 @@ const visibleRows=computed(()=>rows.value.filter(r=>{
 const canCancel=computed(()=>['queued','awaiting_card','funding_pending'].includes(detail.value?.order.status))
 const canRenewal=computed(()=>detail.value?.order.status==='completed' && (!detail.value.order.product || detail.value.order.product==='gpt') && ['pending','warning'].includes(detail.value.order.renewal_status))
 async function api(path:string,options:RequestInit={}) {const response=await authFetch('/api/v1/admin/direct-orders'+path,options);const data=await response.json();if(!response.ok)throw new Error(data.error || '请求失败');return data}
-async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';try{const data=await api('?page='+next);rows.value=data.list;total.value=data.total;page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
+async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';try{const data=await api('?page='+next);rows.value=next===1?[...(data.synced||[]),...data.list]:data.list;total.value=data.total+(next===1?Number(data.synced_total||0):0);page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
 async function open(id:number){if(detailLoading.value)return;showDetail.value=true;detail.value=null;detailError.value='';detailLoading.value=true;try{detail.value=await api('/'+id)}catch(e:any){detailError.value=e.message}finally{detailLoading.value=false}}
 async function act(action:'cancel'|'cancel-renewal') {
  if(acting.value || !detail.value)return

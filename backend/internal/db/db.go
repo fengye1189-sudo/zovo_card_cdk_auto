@@ -860,6 +860,33 @@ func ListWebhookEvents(limit int) ([]WebhookEvent, error) {
 	return out, rows.Err()
 }
 
+// ListDirectOrderWebhookEvents returns signed GPT-direct events for reconciling
+// orders created outside the currently configured API key (for example orders
+// placed in the Zovo web console). Payloads must still be sanitized by callers.
+func ListDirectOrderWebhookEvents(limit int) ([]WebhookEvent, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	rows, err := DB.Query(`
+		SELECT id, COALESCE(event_type,''), idem_key, payload, COALESCE(created_at,'')
+		FROM webhook_events WHERE LOWER(event_type) LIKE 'gpt_direct.%'
+		ORDER BY id DESC LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WebhookEvent
+	for rows.Next() {
+		var e WebhookEvent
+		if err := rows.Scan(&e.ID, &e.EventType, &e.IdemKey, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 func normalizeCDKCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }
