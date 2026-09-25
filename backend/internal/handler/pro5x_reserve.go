@@ -48,6 +48,26 @@ func reconcilePro5xReserve(inventory []cardplatform.CardChoice) {
 		return
 	}
 	if r.State == "review" {
+		// A prior timeout or restart can conservatively move the reserve to
+		// review even though the independent balance verifier later confirms
+		// the exact funding operation. Only recover when both durable money
+		// evidence and the live active-card balance agree; otherwise keep the
+		// lock so an uncertain opening is never repeated.
+		var moneyState string
+		if r.CardID > 0 && r.MoneyID != "" &&
+			db.DB.QueryRow("SELECT state FROM automation_money WHERE id=?", r.MoneyID).Scan(&moneyState) == nil &&
+			moneyState == "balance_verified" {
+			if balance, ok := findInventoryCard(inventory, r.CardID); ok && balance >= pro5xInitialMinor {
+				result, updateErr := db.DB.Exec(`UPDATE pro5x_card_reserve SET state='ready',updated_at=?
+					WHERE id=1 AND state='review' AND card_id=? AND money_id=?`, time.Now().Unix(), r.CardID, r.MoneyID)
+				if updateErr == nil {
+					if changed, _ := result.RowsAffected(); changed == 1 {
+						autoResolve("pro5x_reserve")
+						return
+					}
+				}
+			}
+		}
 		autoAlert("pro5x_reserve", 0, "Pro 5X 专卡准备结果需要核对；系统不会重复开卡。")
 		return
 	}
