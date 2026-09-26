@@ -218,7 +218,7 @@ func TestPro20CompletionCreatesOneMinimalSignedOutboxEvent(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if len(fields) != 6 {
+		if len(fields) != 7 {
 			t.Errorf("unexpected completion fields: %v", fields)
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -256,6 +256,54 @@ func TestPro20CompletionCreatesOneMinimalSignedOutboxEvent(t *testing.T) {
 	}
 	if outboxState != "sent" {
 		t.Fatalf("outbox state=%q", outboxState)
+	}
+}
+
+func TestMarketplaceCompletionCostRequiresAuthoritativeCompleteSnapshot(t *testing.T) {
+	complete := `{"order":{"status":"completed","total_cost_usd_minor":1716,"subscription_cost_usd_minor":1684,"service_fee_minor":15,"recharge_fee_usd_minor":16,"open_fee_allocated_usd_minor":1,"cost_complete":true,"cost_source":"zovo_reconciled"}}`
+	cost := marketplaceCompletionCostFromSnapshot(complete)
+	if cost == nil || cost.TotalUSDMinor != 1716 || cost.SubscriptionUSDMinor != 1684 || cost.ServiceFeeUSDMinor != 15 || cost.RechargeFeeUSDMinor != 16 || cost.OpenFeeAllocatedUSDMinor != 1 || !cost.Complete || cost.Source != "zovo_reconciled" {
+		t.Fatalf("unexpected authoritative cost: %#v", cost)
+	}
+	partial := `{"order":{"funding_card_amount_minor":1684,"service_fee_minor":15}}`
+	if cost := marketplaceCompletionCostFromSnapshot(partial); cost != nil {
+		t.Fatalf("partial estimate must not be exported: %#v", cost)
+	}
+}
+
+func TestDeliveredCompletionBackfillsAuthoritativeCostWithSameEvent(t *testing.T) {
+	_, _, _ = insertBoundPro20ForCompletion(t)
+	if err := recordAuthoritativeLocalCompletion(1, "会员已开通，卡密已核销", "2026-09-19T15:21:45Z", time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	var last marketplaceCompletionEvent
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if err := json.NewDecoder(r.Body).Decode(&last); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	t.Setenv("MAPLE_STORE_COMPLETION_WEBHOOK_URL", server.URL)
+	dispatchMarketplaceCompletionOutbox(context.Background())
+	if calls.Load() != 1 || last.Cost != nil {
+		t.Fatalf("initial completion calls=%d cost=%#v", calls.Load(), last.Cost)
+	}
+	snapshot := `{"order":{"total_cost_usd_minor":1716,"subscription_cost_usd_minor":1684,"service_fee_minor":15,"recharge_fee_usd_minor":16,"open_fee_allocated_usd_minor":1,"cost_complete":true,"cost_source":"zovo_reconciled"}}`
+	if _, err := db.DB.Exec(`INSERT INTO automation_watch(local_id,snapshot) VALUES(1,?)`, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	dispatchMarketplaceCompletionOutbox(context.Background())
+	if calls.Load() != 2 || last.EventID != "local:1:completed" || last.Cost == nil || last.Cost.TotalUSDMinor != 1716 {
+		t.Fatalf("historical cost was not backfilled safely: calls=%d event=%#v", calls.Load(), last)
+	}
+	var marker string
+	if err := db.DB.QueryRow(`SELECT last_error FROM marketplace_completion_outbox WHERE local_id=1`).Scan(&marker); err != nil || marker != "cost_synced" {
+		t.Fatalf("cost sync marker=%q err=%v", marker, err)
 	}
 }
 

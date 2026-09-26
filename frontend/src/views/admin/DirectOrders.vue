@@ -15,7 +15,7 @@
         <el-table-column label="账号 / 订单" min-width="210"><template #default="{row}"><div>{{ row.account_email || row.email || '上游未返回账号' }}</div><div class="text-sm text-muted">#{{ row.id }} · {{ row.client_request_id || '—' }}</div><el-tag v-if="row.source==='zovo_webhook'" size="small" type="info">Zovo 网页同步</el-tag><el-tag v-else-if="row.source==='cdk_redemption'" size="small" type="success">兑换记录同步</el-tag></template></el-table-column>
         <el-table-column label="卡片 / 套餐" min-width="140"><template #default="{row}"><div>{{ row.card_last_four ? '•••• '+row.card_last_four : '尾号未返回' }}</div><div class="text-sm text-muted">{{ row.product || 'GPT' }} / {{ row.plan || '—' }}</div></template></el-table-column>
         <el-table-column label="充值状态" min-width="140"><template #default="{row}"><el-tag :type="tone(row.status)">{{ status(row.status) }}</el-tag><div class="text-sm text-muted mt-1">{{ row.stage || '' }}</div></template></el-table-column>
-        <el-table-column label="金额" min-width="155"><template #default="{row}"><div>{{ money(row.final_amount_minor,row.currency) }}</div><div class="text-sm text-muted">预估 {{ money(row.quoted_amount_minor,row.currency) }}</div></template></el-table-column>
+        <el-table-column label="金额 / 成本" min-width="170"><template #default="{row}"><div>{{ money(row.final_amount_minor,row.currency) }}</div><div class="text-sm text-muted">预估 {{ money(row.quoted_amount_minor,row.currency) }}</div><div v-if="cost(row)" class="text-sm text-muted">完整成本 {{ money(cost(row).total_usd_minor,'USD') }}</div></template></el-table-column>
         <el-table-column label="自动续费" min-width="140"><template #default="{row}"><el-tag :type="row.renewal_status==='success'?'success':'info'">{{ renewal(row.renewal_status) }}</el-tag></template></el-table-column>
         <el-table-column label="提交时间 / 耗时" min-width="190"><template #default="{row}"><div>{{ date(row.created_at) }}</div><div class="text-sm text-muted">{{ duration(row) }}</div></template></el-table-column>
         <el-table-column label="操作" width="110" fixed="right"><template #default="{row}"><span v-if="row.synced_only" class="text-sm text-muted">只读同步</span><el-button v-else link type="primary" :disabled="detailLoading || acting" @click="open(row.id)">查看详情</el-button></template></el-table-column>
@@ -33,6 +33,7 @@
             <el-descriptions-item label="支付事实">{{ detail.order.payment_fact || detail.order.payment_status || '上游未返回独立支付结果，请结合消费记录核对' }}</el-descriptions-item>
             <el-descriptions-item label="最终金额">{{ money(detail.order.final_amount_minor,detail.order.currency) }}（预估 {{ money(detail.order.quoted_amount_minor,detail.order.currency) }}）</el-descriptions-item>
             <el-descriptions-item label="服务费">{{ money(detail.order.service_fee_minor,'USD') }} · {{ feeStatus(detail.order.service_fee_status) }}</el-descriptions-item>
+            <el-descriptions-item v-if="cost(detail.order)" label="完整成本">{{ money(cost(detail.order).total_usd_minor,'USD') }}（订阅 {{ money(cost(detail.order).subscription_usd_minor,'USD') }} · 充值费 {{ money(cost(detail.order).recharge_fee_usd_minor,'USD') }} · 开卡分摊 {{ money(cost(detail.order).open_fee_allocated_usd_minor,'USD') }}）</el-descriptions-item>
             <el-descriptions-item label="自动续费">{{ renewal(detail.order.renewal_status) }}<p>{{ detail.order.renewal_message || '' }}</p></el-descriptions-item>
             <el-descriptions-item label="结果说明">{{ detail.order.message || detail.order.error_code || '暂无补充说明' }}</el-descriptions-item>
             <el-descriptions-item label="时间">{{ date(detail.order.created_at) }} → {{ date(detail.order.completed_at) }} · {{ duration(detail.order) }}</el-descriptions-item>
@@ -85,6 +86,7 @@ function renewal(s:string){return ({success:'续费已取消',pending:'取消待
 function feeStatus(s:string){return ({held:'预留中',settled:'已结算',released:'已释放',refunded:'已退回'} as Record<string,string>)[s] || s || '未返回'}
 function tone(s:string):'success'|'danger'|'info'|'warning'{return s==='completed'?'success':failed.includes(s)?'danger':s==='cancelled'?'info':'warning'}
 function money(n:any,currency:string){return typeof n==='number' && Number.isFinite(n) && currency ? currency+' '+(n/100).toFixed(2):'未返回'}
+function cost(order:Order){const value=order?.cost_breakdown;return value?.complete===true && typeof value.total_usd_minor==='number'?value:null}
 function millis(v:any){if(typeof v==='number')return v>1e12?v:v*1000;return typeof v==='string'?Date.parse(v):NaN}
 function date(v:any){const n=millis(v);return Number.isFinite(n)&&n>0?new Date(n).toLocaleString():'未返回'}
 function duration(r:Order){const start=millis(r.created_at),end=millis(r.completed_at);if(!Number.isFinite(start)||start<=0)return '耗时未知';if(!Number.isFinite(end)||end<=0)return terminal.includes(r.status)?'结束时间未返回':'处理中';return end>=start?Math.round((end-start)/1000)+' 秒':'时间待核对'}

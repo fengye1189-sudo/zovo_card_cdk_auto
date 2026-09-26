@@ -47,12 +47,24 @@ type marketplaceCompletionBindRequest struct {
 }
 
 type marketplaceCompletionEvent struct {
-	EventID     string `json:"eventId"`
-	OrderID     string `json:"orderId"`
-	LocalID     int64  `json:"localId"`
-	CodeHash    string `json:"codeHash"`
-	Plan        string `json:"plan"`
-	CompletedAt string `json:"completedAt"`
+	Version     int                        `json:"v"`
+	EventID     string                     `json:"eventId"`
+	OrderID     string                     `json:"orderId"`
+	LocalID     int64                      `json:"localId"`
+	CodeHash    string                     `json:"codeHash"`
+	Plan        string                     `json:"plan"`
+	CompletedAt string                     `json:"completedAt"`
+	Cost        *marketplaceCompletionCost `json:"cost,omitempty"`
+}
+
+type marketplaceCompletionCost struct {
+	TotalUSDMinor            int64  `json:"totalUsdMinor"`
+	SubscriptionUSDMinor     int64  `json:"subscriptionUsdMinor"`
+	ServiceFeeUSDMinor       int64  `json:"serviceFeeUsdMinor"`
+	RechargeFeeUSDMinor      int64  `json:"rechargeFeeUsdMinor"`
+	OpenFeeAllocatedUSDMinor int64  `json:"openFeeAllocatedUsdMinor"`
+	Complete                 bool   `json:"complete"`
+	Source                   string `json:"source"`
 }
 
 type marketplaceCompletionOutboxRow struct {
@@ -65,6 +77,93 @@ type marketplaceCompletionOutboxRow struct {
 	Attempts      int
 	NextAttemptAt int64
 	LeaseUntil    int64
+	Cost          *marketplaceCompletionCost
+}
+
+func completionCostInteger(value any) (int64, bool) {
+	n, ok := value.(float64)
+	if !ok || n < 0 || n > 100000000 || n != float64(int64(n)) {
+		return 0, false
+	}
+	return int64(n), true
+}
+
+// marketplaceCompletionCostFromSnapshot accepts only the provider's explicit
+// USD-minor cost snapshot. It never converts a checkout currency locally and
+// never presents a partial estimate as authoritative accounting.
+func marketplaceCompletionCostFromSnapshot(snapshot string) *marketplaceCompletionCost {
+	var detail struct {
+		Order map[string]any `json:"order"`
+	}
+	if json.Unmarshal([]byte(snapshot), &detail) != nil || detail.Order == nil {
+		return nil
+	}
+	o := detail.Order
+	get := func(keys ...string) (int64, bool) {
+		for _, key := range keys {
+			if n, ok := completionCostInteger(o[key]); ok {
+				return n, true
+			}
+		}
+		return 0, false
+	}
+	var breakdown map[string]any
+	if raw, ok := o["cost_breakdown"].(map[string]any); ok {
+		breakdown = raw
+	}
+	getBreakdown := func(key string) (int64, bool) {
+		if breakdown == nil {
+			return 0, false
+		}
+		return completionCostInteger(breakdown[key])
+	}
+	total, totalOK := get("total_cost_usd_minor", "actual_cost_usd_minor")
+	if !totalOK {
+		total, totalOK = getBreakdown("total_usd_minor")
+	}
+	if !totalOK || total <= 0 {
+		return nil
+	}
+	subscription, _ := get("subscription_cost_usd_minor", "funding_card_amount_minor")
+	if subscription == 0 {
+		subscription, _ = getBreakdown("subscription_usd_minor")
+	}
+	service, _ := get("service_fee_minor")
+	if service == 0 {
+		service, _ = getBreakdown("service_fee_usd_minor")
+	}
+	recharge, _ := get("recharge_fee_usd_minor")
+	if recharge == 0 {
+		recharge, _ = getBreakdown("recharge_fee_usd_minor")
+	}
+	open, _ := get("open_fee_allocated_usd_minor", "card_open_fee_allocated_usd_minor")
+	if open == 0 {
+		open, _ = getBreakdown("open_fee_allocated_usd_minor")
+	}
+	complete := false
+	if v, ok := o["cost_complete"].(bool); ok {
+		complete = v
+	}
+	if breakdown != nil {
+		if v, ok := breakdown["complete"].(bool); ok {
+			complete = v
+		}
+	}
+	if !complete {
+		return nil
+	}
+	source := "zovo_order_cost"
+	if value, ok := o["cost_source"].(string); ok && strings.TrimSpace(value) != "" {
+		source = strings.TrimSpace(value)
+	} else if breakdown != nil {
+		if value, ok := breakdown["source"].(string); ok && strings.TrimSpace(value) != "" {
+			source = strings.TrimSpace(value)
+		}
+	}
+	if len(source) > 80 {
+		source = source[:80]
+	}
+	return &marketplaceCompletionCost{TotalUSDMinor: total, SubscriptionUSDMinor: subscription, ServiceFeeUSDMinor: service, RechargeFeeUSDMinor: recharge, OpenFeeAllocatedUSDMinor: open, Complete: true, Source: source}
 }
 
 // MarketplaceLocalCDKBind accepts a signed, one-way association from the
@@ -387,6 +486,10 @@ func claimMarketplaceCompletionOutbox(now int64) (*marketplaceCompletionOutboxRo
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
+	var snapshot string
+	if err := db.DB.QueryRow(`SELECT snapshot FROM automation_watch WHERE local_id=?`, row.LocalID).Scan(&snapshot); err == nil {
+		row.Cost = marketplaceCompletionCostFromSnapshot(snapshot)
+	}
 	return row, nil
 }
 
@@ -412,10 +515,14 @@ func releaseMarketplaceCompletionOutbox(eventID string, attempts int, now int64)
 		WHERE event_id=? AND state='sending'`, next, now, eventID)
 }
 
-func markMarketplaceCompletionDelivered(eventID string, now int64) error {
+func markMarketplaceCompletionDelivered(eventID string, now int64, costIncluded bool) error {
+	marker := ""
+	if costIncluded {
+		marker = "cost_synced"
+	}
 	result, err := db.DB.Exec(`UPDATE marketplace_completion_outbox
-		SET state='sent',lease_until=0,last_error='',sent_at=?,updated_at=?
-		WHERE event_id=? AND state='sending'`, now, now, eventID)
+		SET state='sent',lease_until=0,last_error=?,sent_at=?,updated_at=?
+		WHERE event_id=? AND state='sending'`, marker, now, now, eventID)
 	if err != nil {
 		return err
 	}
@@ -426,6 +533,38 @@ func markMarketplaceCompletionDelivered(eventID string, now int64) error {
 	return nil
 }
 
+// Re-open already delivered completion rows once an authoritative provider
+// cost snapshot becomes available. Reusing the same event id lets MaplePass
+// add historical costs without duplicating the completion or customer receipt.
+func requeueMarketplaceCompletionCosts(now int64) {
+	rows, err := db.DB.Query(`SELECT o.event_id,o.local_id,w.snapshot
+		FROM marketplace_completion_outbox o
+		JOIN automation_watch w ON w.local_id=o.local_id
+		WHERE o.state='sent' AND o.last_error<>'cost_synced'
+		ORDER BY o.sent_at,o.event_id LIMIT 100`)
+	if err != nil {
+		return
+	}
+	type candidate struct {
+		eventID string
+		localID int64
+	}
+	candidates := []candidate{}
+	for rows.Next() {
+		var item candidate
+		var snapshot string
+		if rows.Scan(&item.eventID, &item.localID, &snapshot) == nil && marketplaceCompletionCostFromSnapshot(snapshot) != nil {
+			candidates = append(candidates, item)
+		}
+	}
+	rows.Close()
+	for _, item := range candidates {
+		_, _ = db.DB.Exec(`UPDATE marketplace_completion_outbox
+			SET state='pending',next_attempt_at=?,lease_until=0,last_error='cost_pending',updated_at=?
+			WHERE event_id=? AND local_id=? AND state='sent' AND last_error<>'cost_synced'`, now, now, item.eventID, item.localID)
+	}
+}
+
 func marketplaceCompletionAlertKey(eventID string) string {
 	return "marketplace_completion:" + eventID
 }
@@ -434,6 +573,7 @@ func marketplaceCompletionAlertKey(eventID string) string {
 // cycle. The lease makes crash recovery safe; the marketplace must deduplicate
 // eventId because a network timeout after its acceptance is inherently unknown.
 func dispatchMarketplaceCompletionOutbox(ctx context.Context) {
+	requeueMarketplaceCompletionCosts(time.Now().Unix())
 	for i := 0; i < marketplaceCompletionBatchSize && ctx.Err() == nil; i++ {
 		now := time.Now().Unix()
 		row, err := claimMarketplaceCompletionOutbox(now)
@@ -445,12 +585,14 @@ func dispatchMarketplaceCompletionOutbox(ctx context.Context) {
 			return
 		}
 		event := marketplaceCompletionEvent{
+			Version:     1,
 			EventID:     row.EventID,
 			OrderID:     row.OrderID,
 			LocalID:     row.LocalID,
 			CodeHash:    row.CodeHash,
 			Plan:        row.Plan,
 			CompletedAt: time.Unix(row.CompletedAt, 0).UTC().Format(time.RFC3339),
+			Cost:        row.Cost,
 		}
 		attemptCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 		err = postMarketplaceCompletion(attemptCtx, event)
@@ -460,7 +602,7 @@ func dispatchMarketplaceCompletionOutbox(ctx context.Context) {
 			autoAlert(marketplaceCompletionAlertKey(row.EventID), row.LocalID, "商城升级成功通知暂未送达，系统将继续重试。")
 			return
 		}
-		if err = markMarketplaceCompletionDelivered(row.EventID, now); err != nil {
+		if err = markMarketplaceCompletionDelivered(row.EventID, now, row.Cost != nil); err != nil {
 			autoAlert(marketplaceCompletionAlertKey(row.EventID), row.LocalID, "商城升级成功通知已提交但回执暂未保存，系统将安全重试。")
 			return
 		}
