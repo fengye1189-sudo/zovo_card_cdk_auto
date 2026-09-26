@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -102,7 +103,7 @@ func operationsCustomerLocation(name string) (*time.Location, error) {
 	}
 }
 
-func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs, accountEmails []string, records []marketplaceCustomerRecord) (map[string]marketplaceCustomerIdentity, error) {
+func marketplaceCustomerIdentities(ctx context.Context, orderIDs, accountEmails []string, records []marketplaceCustomerRecord) (map[string]marketplaceCustomerIdentity, error) {
 	result := map[string]marketplaceCustomerIdentity{}
 	if len(orderIDs) == 0 && len(accountEmails) == 0 {
 		return result, nil
@@ -120,7 +121,7 @@ func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs, accountEmails []s
 	if url == "" {
 		url = "https://maple1189ai.com/api/internal/cdk-customer-identities"
 	}
-	req, err := http.NewRequestWithContext(ctx.Request.Context(), http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +384,7 @@ func OperationsCustomersSearch(c *gin.Context) {
 		if recordEnd > len(records) {
 			recordEnd = len(records)
 		}
-		identities, lookupErr := marketplaceCustomerIdentities(c, orderIDs[orderStart:orderEnd], accountEmails[emailStart:emailEnd], records[recordStart:recordEnd])
+		identities, lookupErr := marketplaceCustomerIdentities(c.Request.Context(), orderIDs[orderStart:orderEnd], accountEmails[emailStart:emailEnd], records[recordStart:recordEnd])
 		if lookupErr != nil {
 			identityNotice = "商城身份暂时无法读取；未明确关联的记录按升级邮箱推定，不会自动绑定纸飞机。"
 			break

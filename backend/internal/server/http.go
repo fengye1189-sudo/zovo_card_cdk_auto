@@ -51,6 +51,9 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := handler.InitOperations(ctx); err != nil {
 		return nil, err
 	}
+	if err := handler.InitCustomerExpiryNotifications(); err != nil {
+		return nil, err
+	}
 
 	engine := gin.Default()
 
@@ -74,6 +77,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	db.StartCDKQueryCleanup(ctx)
 	handler.StartAutomation(ctx)
 	handler.StartNotificationDispatcher(ctx)
+	handler.StartCustomerExpiryNotifications(ctx)
 
 	return &Server{
 		engine: engine,
