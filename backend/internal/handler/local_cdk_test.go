@@ -32,6 +32,9 @@ type localFixture struct {
 
 func newLocalFixture(t *testing.T) *localFixture {
 	t.Helper()
+	// Customer identity enrichment is a separate signed service. Tests that do
+	// not explicitly exercise it must fail locally instead of contacting prod.
+	t.Setenv("CDK_CUSTOMER_IDENTITIES_URL", "http://127.0.0.1:1")
 	gin.SetMode(gin.TestMode)
 	old := db.DB
 	conn, e := sql.Open("sqlite3", filepath.Join(t.TempDir(), "test.db")+"?_busy_timeout=5000&_journal_mode=WAL")

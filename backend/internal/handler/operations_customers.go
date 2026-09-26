@@ -49,6 +49,7 @@ type operationsCustomer struct {
 	BuyerEmail            string `json:"buyer_email"`
 	TelegramID            string `json:"telegram_id"`
 	TelegramUsername      string `json:"telegram_username"`
+	IdentitySource        string `json:"identity_source"`
 }
 
 type marketplaceCustomerIdentity struct {
@@ -57,6 +58,7 @@ type marketplaceCustomerIdentity struct {
 	BuyerEmail       string `json:"buyerEmail"`
 	TelegramID       string `json:"telegramId"`
 	TelegramUsername string `json:"telegramUsername"`
+	AccountEmail     string `json:"accountEmail"`
 }
 
 const operationsCustomerCurrentCTE = `WITH ranked_customers AS (
@@ -87,12 +89,12 @@ func operationsCustomerLocation(name string) (*time.Location, error) {
 	}
 }
 
-func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs []string) (map[string]marketplaceCustomerIdentity, error) {
+func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs, accountEmails []string) (map[string]marketplaceCustomerIdentity, error) {
 	result := map[string]marketplaceCustomerIdentity{}
-	if len(orderIDs) == 0 {
+	if len(orderIDs) == 0 && len(accountEmails) == 0 {
 		return result, nil
 	}
-	body, err := json.Marshal(map[string]any{"v": 1, "orderIds": orderIDs})
+	body, err := json.Marshal(map[string]any{"v": 1, "orderIds": orderIDs, "accountEmails": accountEmails})
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +131,10 @@ func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs []string) (map[str
 	}
 	for _, item := range payload.Identities {
 		if item.OrderID != "" {
-			result[item.OrderID] = item
+			result["order:"+item.OrderID] = item
+		}
+		if email := strings.ToLower(strings.TrimSpace(item.AccountEmail)); email != "" {
+			result["email:"+email] = item
 		}
 	}
 	return result, nil
@@ -324,33 +329,64 @@ func OperationsCustomersSearch(c *gin.Context) {
 	rows.Close()
 	_ = tx.Rollback()
 	orderIDs := make([]string, 0, len(list))
+	accountEmails := make([]string, 0, len(list))
 	seenOrders := map[string]bool{}
+	seenEmails := map[string]bool{}
 	for _, item := range list {
 		if item.MarketplaceOrderID != "" && !seenOrders[item.MarketplaceOrderID] {
 			seenOrders[item.MarketplaceOrderID] = true
 			orderIDs = append(orderIDs, item.MarketplaceOrderID)
 		}
+		email := strings.ToLower(strings.TrimSpace(item.Email))
+		if email != "" && !seenEmails[email] {
+			seenEmails[email] = true
+			accountEmails = append(accountEmails, email)
+		}
 	}
 	identityNotice := ""
-	for start := 0; start < len(orderIDs); start += 100 {
-		end := start + 100
-		if end > len(orderIDs) {
-			end = len(orderIDs)
+	for start := 0; start < len(list); start += 100 {
+		orderStart, orderEnd := start, start+100
+		if orderStart > len(orderIDs) {
+			orderStart = len(orderIDs)
 		}
-		identities, lookupErr := marketplaceCustomerIdentities(c, orderIDs[start:end])
+		if orderEnd > len(orderIDs) {
+			orderEnd = len(orderIDs)
+		}
+		emailStart, emailEnd := start, start+100
+		if emailStart > len(accountEmails) {
+			emailStart = len(accountEmails)
+		}
+		if emailEnd > len(accountEmails) {
+			emailEnd = len(accountEmails)
+		}
+		identities, lookupErr := marketplaceCustomerIdentities(c, orderIDs[orderStart:orderEnd], accountEmails[emailStart:emailEnd])
 		if lookupErr != nil {
-			identityNotice = "购买人资料暂时无法从商城读取；升级账号与订单数据仍可查看和导出。"
+			identityNotice = "商城身份暂时无法读取；未明确关联的记录按升级邮箱推定，不会自动绑定纸飞机。"
 			break
 		}
 		for i := range list {
-			identity, ok := identities[list[i].MarketplaceOrderID]
-			if !ok {
-				continue
+			identity, ok := identities["order:"+list[i].MarketplaceOrderID]
+			if ok {
+				list[i].IdentitySource = "marketplace_order"
+			} else {
+				identity, ok = identities["email:"+strings.ToLower(strings.TrimSpace(list[i].Email))]
+				if ok {
+					list[i].IdentitySource = "upgrade_email_match"
+				}
 			}
-			list[i].BuyerName = identity.BuyerName
-			list[i].BuyerEmail = identity.BuyerEmail
-			list[i].TelegramID = identity.TelegramID
-			list[i].TelegramUsername = identity.TelegramUsername
+			if ok {
+				list[i].BuyerName = identity.BuyerName
+				list[i].BuyerEmail = identity.BuyerEmail
+				list[i].TelegramID = identity.TelegramID
+				list[i].TelegramUsername = identity.TelegramUsername
+			}
+		}
+	}
+	for i := range list {
+		if list[i].IdentitySource == "" {
+			list[i].BuyerName = "升级账号本人"
+			list[i].BuyerEmail = list[i].Email
+			list[i].IdentitySource = "upgrade_email_inferred"
 		}
 	}
 
