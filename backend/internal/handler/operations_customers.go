@@ -54,6 +54,7 @@ type operationsCustomer struct {
 	IdentityConfidence    int    `json:"identity_confidence"`
 	IdentityEvidence      string `json:"identity_evidence"`
 	ReminderReady         bool   `json:"reminder_ready"`
+	ReminderChannel       string `json:"reminder_channel"`
 }
 
 type marketplaceCustomerIdentity struct {
@@ -412,7 +413,14 @@ func OperationsCustomersSearch(c *gin.Context) {
 				list[i].TelegramUsername = identity.TelegramUsername
 				list[i].IdentityConfidence = identity.Confidence
 				list[i].IdentityEvidence = identity.Evidence
-				list[i].ReminderReady = identity.Confidence >= 85 && (identity.TelegramID != "" || identity.BuyerEmail != "")
+				list[i].ReminderReady = true
+				if identity.Confidence >= 85 && identity.TelegramID != "" {
+					list[i].ReminderChannel = "TELEGRAM"
+				} else if identity.Confidence >= 85 && identity.BuyerEmail != "" {
+					list[i].ReminderChannel = "EMAIL"
+				} else {
+					list[i].ReminderChannel = "UPGRADE_EMAIL"
+				}
 			}
 		}
 	}
@@ -423,7 +431,8 @@ func OperationsCustomersSearch(c *gin.Context) {
 			list[i].IdentitySource = "upgrade_email_inferred"
 			list[i].IdentityConfidence = 35
 			list[i].IdentityEvidence = "仅有升级邮箱，尚未找到商城订单、下单邮箱或 Telegram 的明确对应关系"
-			list[i].ReminderReady = false
+			list[i].ReminderReady = true
+			list[i].ReminderChannel = "UPGRADE_EMAIL"
 		}
 	}
 
