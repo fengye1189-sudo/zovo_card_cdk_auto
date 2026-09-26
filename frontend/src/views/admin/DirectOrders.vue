@@ -62,7 +62,12 @@ const visibleRows=computed(()=>rows.value.filter(r=>{
 const canCancel=computed(()=>['queued','awaiting_card','funding_pending'].includes(detail.value?.order.status))
 const canRenewal=computed(()=>detail.value?.order.status==='completed' && (!detail.value.order.product || detail.value.order.product==='gpt') && ['pending','warning'].includes(detail.value.order.renewal_status))
 async function api(path:string,options:RequestInit={}) {const response=await authFetch('/api/v1/admin/direct-orders'+path,options);const data=await response.json();if(!response.ok)throw new Error(data.error || '请求失败');return data}
-async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';try{const data=await api('?page='+next);rows.value=next===1?[...(data.synced||[]),...data.list]:data.list;apiTotal.value=Number(data.total||0);total.value=apiTotal.value+Number(data.synced_total||0);page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
+function newestFirst(a:Order,b:Order){
+ const timeDiff=millis(b.created_at)-millis(a.created_at)
+ if(Number.isFinite(timeDiff) && timeDiff!==0)return timeDiff
+ return Number(b.id||0)-Number(a.id||0)
+}
+async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';try{const data=await api('?page='+next);rows.value=(next===1?[...(data.synced||[]),...data.list]:data.list).sort(newestFirst);apiTotal.value=Number(data.total||0);total.value=apiTotal.value+Number(data.synced_total||0);page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
 async function open(id:number){if(detailLoading.value)return;showDetail.value=true;detail.value=null;detailError.value='';detailLoading.value=true;try{detail.value=await api('/'+id)}catch(e:any){detailError.value=e.message}finally{detailLoading.value=false}}
 async function act(action:'cancel'|'cancel-renewal') {
  if(acting.value || !detail.value)return
