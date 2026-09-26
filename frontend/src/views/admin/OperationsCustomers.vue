@@ -58,6 +58,8 @@
         <article v-for="row in rows" :key="row.id" class="rounded-xl border p-4 space-y-2 break-words">
           <div class="flex justify-between gap-3"><strong class="break-all">升级邮箱：{{ row.email }}</strong><span>{{ planLabel(row.plan) }}</span></div>
           <p>购买人：{{ row.buyer_name || '未记录' }} <span class="text-xs text-muted">{{ identityLabel(row) }}</span></p>
+          <p class="text-xs text-muted">依据：{{ row.identity_evidence || '暂无' }} · 可信度 {{ row.identity_confidence || 0 }}%</p>
+          <p :class="row.reminder_ready ? 'text-success' : 'text-warn'">{{ row.reminder_ready ? '✓ 可自动到期提醒' : '⚠ 到期提醒前需核对身份' }}</p>
           <p class="break-all">联系邮箱：{{ row.buyer_email || row.email }} <span class="text-xs text-muted">{{ identityLabel(row) }}</span></p>
           <p>纸飞机：<a v-if="telegramLink(row)" class="text-primary" :href="telegramLink(row)">{{ telegramLabel(row) }}</a><span v-else>未绑定</span><span v-if="row.telegram_id"> · ID {{ row.telegram_id }}</span></p>
           <p>开通：{{ date(row.activated_at) }}</p>
@@ -71,7 +73,7 @@
           <thead><tr><th class="py-3">升级邮箱</th><th>购买人</th><th>纸飞机</th><th>联系邮箱</th><th>升级类型</th><th>开通 / 到期</th><th>剩余时间</th><th>订单对应</th></tr></thead>
           <tbody><tr v-for="row in rows" :key="row.id" class="border-t">
             <td class="py-4 pr-4 font-mono break-all">{{ row.email }}</td>
-            <td class="pr-4">{{ row.buyer_name || '未记录' }}<br /><span class="text-xs text-muted">{{ identityLabel(row) }}</span></td>
+            <td class="pr-4">{{ row.buyer_name || '未记录' }}<br /><span class="text-xs text-muted">{{ identityLabel(row) }} · {{ row.identity_confidence || 0 }}%</span><br /><span class="text-xs text-muted">{{ row.identity_evidence }}</span><br /><span :class="row.reminder_ready ? 'text-success text-xs' : 'text-warn text-xs'">{{ row.reminder_ready ? '可自动提醒' : '需人工核对' }}</span></td>
             <td class="pr-4 whitespace-nowrap"><a v-if="telegramLink(row)" class="text-primary" :href="telegramLink(row)">{{ telegramLabel(row) }}</a><span v-else>未绑定</span><br /><span v-if="row.telegram_id" class="text-xs text-muted">ID {{ row.telegram_id }}</span></td>
             <td class="pr-4 font-mono break-all">{{ row.buyer_email || row.email }}<br /><span class="text-xs text-muted">{{ identityLabel(row) }}</span></td>
             <td class="pr-4">{{ row.upgrade_type || planLabel(row.plan) }}</td>
@@ -111,6 +113,9 @@ type Customer = {
   telegram_id: string
   telegram_username: string
   identity_source: string
+  identity_confidence: number
+  identity_evidence: string
+  reminder_ready: boolean
 }
 
 const defaults = () => ({ q: '', plan: '', state: 'active', expiry_days: 0, timezone: 'Asia/Bangkok', segment: '' })
@@ -175,7 +180,7 @@ function telegramLink(row: Customer) {
 }
 
 function identityLabel(row: Customer) {
-  return ({ marketplace_order: '商城订单确认', upgrade_email_match: '升级邮箱匹配商城账号', upgrade_email_inferred: '按升级邮箱推定' } as Record<string, string>)[row.identity_source] || ''
+  return ({ marketplace_order: '商城订单确认', upgrade_email_match: '升级邮箱匹配商城账号', legacy_order_email_match: '历史下单邮箱确认', time_plan_match: '同套餐与时间推定', upgrade_email_inferred: '按升级邮箱推定' } as Record<string, string>)[row.identity_source] || ''
 }
 
 async function load(nextPage = 1) {
@@ -258,11 +263,11 @@ async function exportCurrent() {
     const body = await response.json().catch(() => ({}))
     if (!response.ok) throw new Error(body.error || '客户名单导出失败')
     const exportRows = (body.list || []) as Customer[]
-    const header = ['升级邮箱', '购买人', '联系邮箱', '身份依据', 'Telegram用户名', 'Telegram ID', '升级类型', '开通时间', '到期时间', '到期类型', '剩余状态', '商城订单', '上游订单', '兑换记录']
+    const header = ['升级邮箱', '购买人', '联系邮箱', '身份来源', '判断依据', '可信度', '提醒状态', 'Telegram用户名', 'Telegram ID', '升级类型', '开通时间', '到期时间', '到期类型', '剩余状态', '商城订单', '上游订单', '兑换记录']
     const lines = [header.map(csvCell).join(',')]
     for (const row of exportRows) {
       lines.push([
-        row.email, row.buyer_name, row.buyer_email || row.email, identityLabel(row), row.telegram_username ? `@${row.telegram_username.replace(/^@/, '')}` : '', row.telegram_id,
+        row.email, row.buyer_name, row.buyer_email || row.email, identityLabel(row), row.identity_evidence, row.identity_confidence, row.reminder_ready ? '可自动提醒' : '需人工核对', row.telegram_username ? `@${row.telegram_username.replace(/^@/, '')}` : '', row.telegram_id,
         row.upgrade_type || planLabel(row.plan), date(row.activated_at), date(row.subscription_expires_at), row.expiry_estimated ? '预计到期' : '精确到期', remaining(row),
         row.marketplace_order_id, row.upstream_id || '', row.id,
       ].map(csvCell).join(','))
