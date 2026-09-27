@@ -193,8 +193,8 @@
           <h2 class="text-xl font-bold text-ink">卡健康（失败归因）</h2>
           <p class="text-sm text-muted mt-1">
             本站观察充值失败：同一张卡失败达到阈值后——
-            <strong>不同邮箱</strong>判为卡问题（拉黑并冻结，下次自动选卡跳过）；
-            <strong>同一邮箱</strong>判为邮箱/号问题（不冻卡）。
+            <strong>至少两个不同邮箱明确拒付</strong>后判为卡问题并安全销卡退款；
+            <strong>同一邮箱</strong>重复拒付只记录，不冻卡、不销卡。
           </p>
         </div>
         <div class="flex items-center gap-3">
@@ -210,7 +210,6 @@
           <el-input-number v-model="healthPolicy.fail_threshold" :min="1" :max="10" class="!w-full" />
         </div>
         <div class="flex items-end pb-1">
-          <el-checkbox v-model="healthPolicy.freeze_on_block">判定坏卡后自动冻结（卡台）</el-checkbox>
         </div>
         <div class="flex items-end pb-1">
           <el-checkbox v-model="healthPolicy.require_known_email">无邮箱时不拉黑（推荐）</el-checkbox>
@@ -595,7 +594,7 @@ async function savePolicy() {
 const healthPolicy = reactive({
   enabled: true,
   fail_threshold: 2,
-  freeze_on_block: true,
+  freeze_on_block: false,
   require_known_email: true,
 })
 const healthSaving = ref(false)
@@ -624,7 +623,7 @@ async function loadHealth() {
     Object.assign(healthPolicy, {
       enabled: p.enabled !== false,
       fail_threshold: Number(p.fail_threshold) || 2,
-      freeze_on_block: p.freeze_on_block !== false,
+      freeze_on_block: false,
       require_known_email: p.require_known_email !== false,
     })
     blocklist.value = Array.isArray(d.blocklist) ? d.blocklist.filter((b: any) => b.active !== false) : []

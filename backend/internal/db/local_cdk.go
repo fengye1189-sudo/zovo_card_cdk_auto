@@ -108,6 +108,7 @@ func InitLocalCDK() error {
  CREATE INDEX IF NOT EXISTS idx_automation_card_retire ON automation_card_lifecycle(retire_state,updated_at);
  CREATE TABLE IF NOT EXISTS automation_card_declines (
   local_id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL, status TEXT NOT NULL,
+  email_norm TEXT NOT NULL DEFAULT '',
   recorded_at INTEGER NOT NULL
  );
  CREATE INDEX IF NOT EXISTS idx_automation_card_declines_card ON automation_card_declines(card_id);
@@ -296,5 +297,8 @@ func InitLocalCDK() error {
 	if err != nil {
 		return err
 	}
-	return migrateLocalCDKResultColumns()
+	if err = migrateLocalCDKResultColumns(); err != nil {
+		return err
+	}
+	return migrateAutomationDeclineEmails()
 }

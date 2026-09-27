@@ -12,13 +12,13 @@ import (
 func TestSecondDistinctExactDeclineQueuesRetirementOnce(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
-	if err := recordAutomationDecline(1, 123, "requires_action", now); err != nil {
+	if err := recordAutomationDecline(1, 123, "same@example.com", "requires_action", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordAutomationDecline(1, 123, "declined", now); err != nil {
+	if err := recordAutomationDecline(1, 123, "same@example.com", "declined", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordAutomationDecline(1, 123, "declined", now+1); err != nil {
+	if err := recordAutomationDecline(1, 123, "same@example.com", "declined", now+1); err != nil {
 		t.Fatal(err)
 	}
 	var firstDeclines int
@@ -29,7 +29,7 @@ func TestSecondDistinctExactDeclineQueuesRetirementOnce(t *testing.T) {
 	if firstDeclines != 1 || firstState != "active" {
 		t.Fatal("first decline retired card", firstDeclines, firstState)
 	}
-	if err := recordAutomationDecline(2, 123, "failed_precharge", now+2); err != nil {
+	if err := recordAutomationDecline(2, 123, "same@example.com", "failed_precharge", now+2); err != nil {
 		t.Fatal(err)
 	}
 	var declines int

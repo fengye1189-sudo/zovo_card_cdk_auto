@@ -102,14 +102,14 @@ func TestSecondExactDeclineRemovesCardFromRandomPool(t *testing.T) {
 	if _, err := ensureLocalCardCycle(123, "ordinary", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := recordAutomationDecline(1, 123, "declined", now); err != nil {
+	if err := recordAutomationDecline(1, 123, "same@example.com", "declined", now); err != nil {
 		t.Fatal(err)
 	}
 	ok, err := localCardHasCycleCapacity(123, "ordinary", now)
 	if err != nil || !ok {
 		t.Fatal("first decline removed card", ok, err)
 	}
-	if err := recordAutomationDecline(2, 123, "failed_precharge", now+1); err != nil {
+	if err := recordAutomationDecline(2, 123, "same@example.com", "failed_precharge", now+1); err != nil {
 		t.Fatal(err)
 	}
 	ok, err = localCardHasCycleCapacity(123, "ordinary", now)

@@ -303,7 +303,7 @@ func watchOrder(ctx context.Context, id int64) {
 	}
 	if err := recordAutomationOutcome(id, r.CardID, state, now); err != nil {
 		autoAlert("card_lifecycle", 0, "卡片成功率记录暂时失败；不会因此销卡，后台稍后继续核对。")
-	} else if err := recordAutomationDecline(id, r.CardID, state, now); err != nil {
+	} else if err := recordAutomationDecline(id, r.CardID, firstNonEmpty(strAny(order["account_email"]), r.Email), state, now); err != nil {
 		autoAlert("card_lifecycle", 0, "卡片拒付次数记录暂时失败；不会因此销卡，后台稍后继续核对。")
 	} else {
 		autoResolve("card_lifecycle")
