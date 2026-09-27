@@ -134,9 +134,10 @@ func localShuffleCards(ids []int64) error {
 	return nil
 }
 
-// localFairShuffleCards keeps randomness among equally used cards while
-// preventing consecutive use of the same card when another eligible card is
-// available. Persisted selection counts make the distribution survive restarts.
+// localFairShuffleCards puts cards with fewer authoritative declines first,
+// then balances successful selection history and avoids consecutive reuse when
+// an equally healthy alternative exists. Persisted health and selections make
+// the priority survive restarts.
 func localFairShuffleCards(ids []int64) error {
 	if err := localShuffleCards(ids); err != nil || len(ids) < 2 {
 		return err
@@ -146,6 +147,7 @@ func localFairShuffleCards(ids []int64) error {
 		allowed[id] = true
 	}
 	counts := map[int64]int64{}
+	declines := map[int64]int64{}
 	rows, err := db.DB.Query("SELECT card_id,COUNT(*) FROM local_card_selections GROUP BY card_id")
 	if err != nil {
 		return err
@@ -157,6 +159,21 @@ func localFairShuffleCards(ids []int64) error {
 			return err
 		}
 		counts[id] = count
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	rows, err = db.DB.Query("SELECT card_id,decline_count FROM automation_card_lifecycle")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var id, count int64
+		if err = rows.Scan(&id, &count); err != nil {
+			rows.Close()
+			return err
+		}
+		declines[id] = count
 	}
 	if err = rows.Close(); err != nil {
 		return err
@@ -181,6 +198,9 @@ func localFairShuffleCards(ids []int64) error {
 		return err
 	}
 	sort.SliceStable(ids, func(i, j int) bool {
+		if declines[ids[i]] != declines[ids[j]] {
+			return declines[ids[i]] < declines[ids[j]]
+		}
 		iLast, jLast := ids[i] == lastCard, ids[j] == lastCard
 		if iLast != jLast {
 			return !iLast

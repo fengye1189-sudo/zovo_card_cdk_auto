@@ -9,7 +9,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-func TestFirstExactDeclineQueuesRetirementOnce(t *testing.T) {
+func TestSecondDistinctExactDeclineQueuesRetirementOnce(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
 	if err := recordAutomationDecline(1, 123, "requires_action", now); err != nil {
@@ -21,12 +21,23 @@ func TestFirstExactDeclineQueuesRetirementOnce(t *testing.T) {
 	if err := recordAutomationDecline(1, 123, "declined", now+1); err != nil {
 		t.Fatal(err)
 	}
+	var firstDeclines int
+	var firstState string
+	if err := db.DB.QueryRow("SELECT decline_count,retire_state FROM automation_card_lifecycle WHERE card_id=123").Scan(&firstDeclines, &firstState); err != nil {
+		t.Fatal(err)
+	}
+	if firstDeclines != 1 || firstState != "active" {
+		t.Fatal("first decline retired card", firstDeclines, firstState)
+	}
+	if err := recordAutomationDecline(2, 123, "failed_precharge", now+2); err != nil {
+		t.Fatal(err)
+	}
 	var declines int
 	var state, reason string
 	if err := db.DB.QueryRow("SELECT decline_count,retire_state,retire_reason FROM automation_card_lifecycle WHERE card_id=123").Scan(&declines, &state, &reason); err != nil {
 		t.Fatal(err)
 	}
-	if declines != 1 || state != "queued" || reason != "one_decline" {
+	if declines != 2 || state != "queued" || reason != "two_declines" {
 		t.Fatal("wrong decline retirement state", declines, state, reason)
 	}
 }
@@ -39,7 +50,7 @@ func TestAutomaticRetirementIsSafeAndIdempotent(t *testing.T) {
 			p.Topup, p.Open, p.Retire = false, false, true
 			putAutoPolicy(t, p)
 			now := time.Now().Unix()
-			if _, err := db.DB.Exec("INSERT OR REPLACE INTO automation_card_lifecycle(card_id,product_code,bin,phase,decline_count,retire_state,retire_reason,created_at,updated_at) VALUES(123,'TEST','537872','final',1,'queued','one_decline',?,?)", now, now); err != nil {
+			if _, err := db.DB.Exec("INSERT OR REPLACE INTO automation_card_lifecycle(card_id,product_code,bin,phase,decline_count,retire_state,retire_reason,created_at,updated_at) VALUES(123,'TEST','537872','final',2,'queued','two_declines',?,?)", now, now); err != nil {
 				t.Fatal(err)
 			}
 			if mode == "unknown" {

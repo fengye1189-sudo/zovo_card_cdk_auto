@@ -74,6 +74,9 @@ func TestOperationsCustomerDashboardDeduplicatesLatestAccountAndFiltersExpiry(t 
 	if row["email"] != "c@example.com" || row["expiry_estimated"] != true {
 		t.Fatal("wrong expiring customer", row)
 	}
+	if row["buyer_name"] != "升级账号本人" || row["buyer_email"] != "c@example.com" || row["identity_source"] != "upgrade_email_inferred" {
+		t.Fatal("unlinked customer did not receive an explicit email-based inference", row)
+	}
 
 	status, body = f.call("/customers/search", gin.H{
 		"page": 1, "page_size": 25, "plan": "plus", "segment": "new_today", "timezone": "Asia/Bangkok",

@@ -241,7 +241,7 @@ func TestBindCDKRedemptionTokenCASRejectsConcurrentChanges(t *testing.T) {
 		if err := BindCDKRedemptionToken(code, token); err != nil {
 			t.Fatal(err)
 		}
-		startedAt := time.Date(2026, 9, 19, 13, 0, 0, 0, time.UTC)
+		startedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 		if err := ActivateCDKQueryWindowByToken(token, startedAt); err != nil {
 			t.Fatal(err)
 		}

@@ -63,7 +63,7 @@
     </div>
 
     <!-- 状态摘要卡片（精简，详情进弹窗） -->
-    <div class="grid gap-3 sm:grid-cols-3">
+    <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <button type="button" class="status-card" @click="openStatusDialog">
         <div class="sc-label">连通状态</div>
         <div class="sc-value" :class="pingOk === true ? 'ok' : pingOk === false ? 'bad' : ''">
@@ -80,6 +80,11 @@
         <div class="sc-label">服务费（实时）</div>
         <div class="sc-value mono">{{ feeSummary }}</div>
         <div class="sc-hint">v{{ plansVersion ?? '—' }} · 点击展开</div>
+      </button>
+      <button type="button" class="status-card" @click="openInsightsDialog">
+        <div class="sc-label">费率与卡容量</div>
+        <div class="sc-value">{{ vipTitle }}</div>
+        <div class="sc-hint">充值费 {{ vipFee }} · {{ usageCards.length }} 张已同步</div>
       </button>
     </div>
 
@@ -158,6 +163,38 @@
         <el-button type="primary" :loading="loadingPlans" @click="loadPlans">刷新价格</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="dlgInsights" title="Zovo费率与单卡容量" width="860px" align-center destroy-on-close>
+      <div class="result-grid sm:grid-cols-4">
+        <div class="result-tile"><div class="k">会员等级</div><div class="v">{{ vipTitle }}</div></div>
+        <div class="result-tile"><div class="k">实际充值费率</div><div class="v mono">{{ vipFee }}</div></div>
+        <div class="result-tile"><div class="k">累计充值</div><div class="v mono">{{ vipRecharge }}</div></div>
+        <div class="result-tile"><div class="k">资金事件</div><div class="v mono">{{ costEventCount }}</div></div>
+      </div>
+      <p class="text-xs text-muted mt-3 mb-3">开卡费分摊按上游已确认成功账号数计算；失败和处理中不会摊薄成本。</p>
+      <el-table :data="usageCards" max-height="440" empty-text="卡容量正在后台同步">
+        <el-table-column label="卡片" min-width="120">
+          <template #default="{ row }"><span class="mono">#{{ row.card_id }} · {{ row.last4 || '—' }}</span></template>
+        </el-table-column>
+        <el-table-column prop="product_code" label="卡产品" min-width="120" />
+        <el-table-column prop="successes" label="成功账号" width="92" />
+        <el-table-column prop="failures" label="失败" width="72" />
+        <el-table-column prop="in_flight" label="处理中" width="82" />
+        <el-table-column label="剩余" width="76">
+          <template #default="{ row }">{{ row.remaining === -1 ? '不限' : row.remaining }}</template>
+        </el-table-column>
+        <el-table-column label="开卡费分摊" min-width="112">
+          <template #default="{ row }"><span class="mono">${{ money(row.allocated_open_fee) }}</span></template>
+        </el-table-column>
+        <el-table-column label="充值费率" width="92">
+          <template #default="{ row }">{{ percent(row.recharge_fee_rate) }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="dlgInsights = false">关闭</el-button>
+        <el-button type="primary" :loading="loadingInsights" @click="loadInsights(true)">立即同步</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -180,6 +217,7 @@ const pinging = ref(false)
 const loadingPlans = ref(false)
 const loadingBal = ref(false)
 const loadingNet = ref(false)
+const loadingInsights = ref(false)
 
 const egressIp = ref('')
 const pingOk = ref<boolean | null>(null)
@@ -188,10 +226,14 @@ const pingTiles = ref<Record<string, string>>({})
 const bal = reactive<{ spendable?: string; balance?: string; reserve?: string }>({})
 const plansRaw = ref<Record<string, any>>({})
 const plansVersion = ref<number | null>(null)
+const insightAccount = ref<Record<string, any>>({})
+const usageCards = ref<any[]>([])
+const costEventCount = ref(0)
 
 const dlgStatus = ref(false)
 const dlgBal = ref(false)
 const dlgPlans = ref(false)
+const dlgInsights = ref(false)
 
 const keyHint = computed(() =>
   hints.card_api_key_configured ? `已配置 ${hints.card_api_key_hint || ''}`.trim() : '粘贴 sk_…',
@@ -243,6 +285,19 @@ const feeSummary = computed(() =>
 )
 const feeAllZero = computed(() => planCards.value.every((p) => Number(p.fee) === 0))
 const spendableDisplay = computed(() => bal.spendable ?? '—')
+const vipTitle = computed(() => insightAccount.value.tier_name || insightAccount.value.tier || '待同步')
+const vipFee = computed(() => percent(insightAccount.value.recharge_fee_rate))
+const vipRecharge = computed(() => insightAccount.value.cumulative_recharge == null ? '—' : `$${money(insightAccount.value.cumulative_recharge)}`)
+
+function money(value: any) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(2) : '—'
+}
+function percent(value: any) {
+  if (value == null || value === '') return '—'
+  const n = Number(value)
+  return Number.isFinite(n) ? `${(n * 100).toFixed(2)}%` : '—'
+}
 
 function applyPreset(id: string) {
   form.card_api_base = PRESETS[id] || PRESETS.prod
@@ -364,6 +419,25 @@ async function loadBalance() {
   }
 }
 
+async function loadInsights(refresh = false) {
+  loadingInsights.value = true
+  try {
+    const r = await authFetch(`/api/v1/admin/cardplatform/insights${refresh ? '?refresh=1' : ''}`)
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      dialog.toast(d.error || '费率与卡容量同步失败', 'err')
+      return
+    }
+    insightAccount.value = d.account || {}
+    usageCards.value = d.cards || []
+    costEventCount.value = Number(d.cost_event_count || 0)
+    if (refresh) dialog.toast('费率与卡容量已更新', 'ok')
+    dlgInsights.value = true
+  } finally {
+    loadingInsights.value = false
+  }
+}
+
 async function runAllChecks() {
   busy.value = true
   try {
@@ -371,6 +445,7 @@ async function runAllChecks() {
     await ping()
     await loadBalance()
     await loadPlans()
+    await loadInsights(true)
     dlgStatus.value = true
   } finally {
     busy.value = false
@@ -388,6 +463,10 @@ function openBalanceDialog() {
 function openPlansDialog() {
   dlgPlans.value = true
   if (!Object.keys(plansRaw.value).length) loadPlans()
+}
+function openInsightsDialog() {
+  dlgInsights.value = true
+  if (!Object.keys(insightAccount.value).length) loadInsights(false)
 }
 
 onMounted(async () => {

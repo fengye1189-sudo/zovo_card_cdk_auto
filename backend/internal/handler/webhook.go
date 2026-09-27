@@ -71,6 +71,10 @@ func CardPlatformWebhook(c *gin.Context) {
 			db.WriteAudit("webhook", "gpt_direct.completed", idem, c.ClientIP())
 		}
 	}
+	// Keep an idempotent, structured cost/capacity feed in addition to the
+	// retained diagnostic event. balance_change is the accounting authority;
+	// card_fee is attribution-only and is never added to the ledger twice.
+	recordCardPlatformCostEvent(payload, eventType)
 	// 本站 CDK 状态：兑换完成 → consumed（避免列表仍显示「未使用」）
 	if strings.HasPrefix(strings.ToLower(eventType), "gpt_direct.") {
 		notifyAutomationWebhook(payload)
@@ -123,16 +127,26 @@ func webhookIdemKey(p map[string]interface{}, eventType string) string {
 		return ""
 	}
 	switch eventType {
+	case "balance_change":
+		if id := str("balance_log_id"); id != "" {
+			return "balance_change|" + id
+		}
+	case "card_fee":
+		return strings.Join([]string{eventType, str("auth_id"), str("fee_type"), str("occurred_at")}, "|")
 	case "card_transaction":
 		return strings.Join([]string{eventType, str("auth_id"), str("type"), str("status")}, "|")
 	case "card_operation":
 		return strings.Join([]string{eventType, str("operation"), str("operation_id"), str("status")}, "|")
-	case "gpt_direct.completed":
+	}
+	if id := str("event_id"); id != "" {
+		return eventType + "|" + id
+	}
+	if strings.HasPrefix(eventType, "gpt_direct.") {
 		if id := str("order_id"); id != "" {
-			return "gpt_direct.completed|order|" + id
+			return eventType + "|order|" + id
 		}
 		if id := str("client_request_id"); id != "" {
-			return "gpt_direct.completed|client|" + id
+			return eventType + "|client|" + id
 		}
 	}
 	// fallback
@@ -179,10 +193,10 @@ func AdminListWebhooks(c *gin.Context) {
 	}
 	sec, _ := db.GetSetting("webhook_secret")
 	c.JSON(http.StatusOK, gin.H{
-		"events":                out,
-		"webhook_url":           urlHint,
-		"webhook_secret_set":    strings.TrimSpace(sec) != "",
-		"webhook_secret_hint":   maskSecret(sec),
+		"events":              out,
+		"webhook_url":         urlHint,
+		"webhook_secret_set":  strings.TrimSpace(sec) != "",
+		"webhook_secret_hint": maskSecret(sec),
 	})
 }
 

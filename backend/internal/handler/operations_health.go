@@ -307,7 +307,7 @@ func operationsCheckHealth(ctx context.Context) {
 	operationsSetAlert("heartbeat", !report.HeartbeatOK, "订单自动化超过 10 分钟没有心跳，请检查服务器后台任务。")
 	operationsSetAlert("order-backlog", report.Overdue > 0, "存在超过 30 分钟仍未完成的订单，请在售后工作台核对。")
 	operationsSetAlert("notification-delivery", report.NotificationsFailed+report.NotificationsUnknown > 0, "最近 24 小时存在发送失败或结果不明的通知，请检查通知配置和发送记录。")
-	operationsSetAlert("card-pool", report.ChannelEnabled && report.CandidateCards < 2, "支付卡池的本地候选卡少于 2 张，请检查卡片使用次数、在途订单及自动开卡规则。")
+	operationsSetAlert("card-pool", report.ChannelEnabled && report.CandidateCards < 1, "支付卡池目前没有健康工作卡，请检查拒付、在途订单及自动开卡状态。")
 	operationsSetAlert("backup-stale", report.LastBackupSuccess == 0 || report.CheckedAt-report.LastBackupSuccess > 90000, "超过 25 小时没有已校验的数据库备份，请在运维中心检查并创建备份。")
 	operationsSetAlert("backup-size", report.DatabaseBytes > operationsMaxSnapshotBytes, "数据库已超过当前在线备份大小上限，请扩展备份存储并调整上限。")
 	operationsSetAlert("restore-pending", report.RestorePending, "数据库已从备份恢复，仍需核对备份之后的付款、卡片次数和卡密状态；核对完成前保持充值与自动资金操作暂停。")

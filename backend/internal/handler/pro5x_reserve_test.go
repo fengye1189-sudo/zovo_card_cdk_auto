@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
@@ -103,5 +104,29 @@ func TestInterruptedPro5xReserveNeverReopensAutomatically(t *testing.T) {
 	}
 	if reserveState != "review" || moneyState != "unknown" {
 		t.Fatal("interrupted reserve was not safely locked", reserveState, moneyState)
+	}
+}
+
+func TestReviewedPro5xReserveRecoversFromVerifiedBalanceEvidence(t *testing.T) {
+	newLocalFixture(t)
+	now := time.Now().Unix()
+	if _, err := db.DB.Exec(`INSERT INTO automation_money(id,action,card_id,amount_minor,reserved_minor,state,created_at,result_card_id)
+		VALUES('verified-reserve','pro5x_reserve_open',0,10000,10100,'balance_verified',?,379135)`, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`UPDATE pro5x_card_reserve SET card_id=379135,money_id='verified-reserve',state='review',created_at=?,updated_at=? WHERE id=1`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	autoAlert("pro5x_reserve", 0, "Pro 5X 专卡准备结果需要核对；系统不会重复开卡。")
+	balance := 100.0
+	reconcilePro5xReserve([]cardplatform.CardChoice{{ID: 379135, Status: "ACTIVE", Balance: &balance}})
+
+	var state string
+	if err := db.DB.QueryRow("SELECT state FROM pro5x_card_reserve WHERE id=1").Scan(&state); err != nil || state != "ready" {
+		t.Fatal("verified reserve did not recover", state, err)
+	}
+	var resolved int
+	if err := db.DB.QueryRow("SELECT resolved FROM automation_alerts WHERE alert_key='pro5x_reserve'").Scan(&resolved); err != nil || resolved != 1 {
+		t.Fatal("verified reserve alert was not resolved", resolved, err)
 	}
 }

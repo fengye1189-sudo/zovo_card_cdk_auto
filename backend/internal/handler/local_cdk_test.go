@@ -32,6 +32,9 @@ type localFixture struct {
 
 func newLocalFixture(t *testing.T) *localFixture {
 	t.Helper()
+	// Customer identity enrichment is a separate signed service. Tests that do
+	// not explicitly exercise it must fail locally instead of contacting prod.
+	t.Setenv("CDK_CUSTOMER_IDENTITIES_URL", "http://127.0.0.1:1")
 	gin.SetMode(gin.TestMode)
 	old := db.DB
 	conn, e := sql.Open("sqlite3", filepath.Join(t.TempDir(), "test.db")+"?_busy_timeout=5000&_journal_mode=WAL")
@@ -260,6 +263,26 @@ func TestLocalFairRandomAvoidsLastAndBalancesUsage(t *testing.T) {
 	}
 	if ids[0] != 456 {
 		t.Fatal("last selected card was repeated despite an alternative", ids)
+	}
+}
+
+func TestLocalFairSelectionPrefersHealthBeforeUsageBalance(t *testing.T) {
+	newLocalFixture(t)
+	now := time.Now().Unix()
+	if _, err := db.DB.Exec(`INSERT INTO automation_card_lifecycle(card_id,decline_count,created_at,updated_at)
+	 VALUES(123,1,?,?),(456,0,?,?)`, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO local_card_selections(local_id,card_id,selected_at)
+	 VALUES(1,456,10),(2,456,20),(3,456,30)`); err != nil {
+		t.Fatal(err)
+	}
+	ids := []int64{123, 456}
+	if err := localFairShuffleCards(ids); err != nil {
+		t.Fatal(err)
+	}
+	if ids[0] != 456 {
+		t.Fatal("card with a prior decline outranked a healthy card", ids)
 	}
 }
 

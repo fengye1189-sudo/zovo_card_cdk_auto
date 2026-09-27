@@ -59,10 +59,14 @@ func productCost(p cardplatform.AutomationProduct, amount int64, open bool) (int
 }
 
 const legacyInventoryAlert = "无法完整核查卡余额，已跳过自动补款与开卡。卡片超过 100 张时需要调整扫描方案。"
-const automationReadyCardFloor = 2
+
+// Low-volume policy: keep one funded working card. Opening more cards early
+// strands principal and repeats opening fees; a new card is opened only when
+// no healthy selected card can accept the next payment.
+const automationReadyCardFloor = 1
 
 func shouldOpenAutomationCard(ready int) bool {
-	return ready <= automationReadyCardFloor
+	return ready < automationReadyCardFloor
 }
 
 type inventoryScanError struct{ reason string }

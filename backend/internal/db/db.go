@@ -860,6 +860,78 @@ func ListWebhookEvents(limit int) ([]WebhookEvent, error) {
 	return out, rows.Err()
 }
 
+// ListDirectOrderWebhookEvents returns signed GPT-direct events for reconciling
+// orders created outside the currently configured API key (for example orders
+// placed in the Zovo web console). Payloads must still be sanitized by callers.
+func ListDirectOrderWebhookEvents(limit int) ([]WebhookEvent, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	rows, err := DB.Query(`
+		SELECT id, COALESCE(event_type,''), idem_key, payload, COALESCE(created_at,'')
+		FROM webhook_events WHERE LOWER(event_type) LIKE 'gpt_direct.%'
+		ORDER BY id DESC LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WebhookEvent
+	for rows.Next() {
+		var e WebhookEvent
+		if err := rows.Scan(&e.ID, &e.EventType, &e.IdemKey, &e.Payload, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// LocalDirectOrderFact is read-only reconciliation evidence from a local CDK
+// redemption that reached the upstream direct-order service.
+type LocalDirectOrderFact struct {
+	LocalID     int64
+	UpstreamID  int64
+	RequestID   string
+	Plan        string
+	Status      string
+	Email       string
+	CardID      int64
+	CreatedAt   int64
+	ActivatedAt int64
+}
+
+// ListLocalDirectOrderFacts covers orders made with an older API key or before
+// webhook ingestion was enabled. Callers must expose these rows as read-only.
+func ListLocalDirectOrderFacts(limit int) ([]LocalDirectOrderFact, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	rows, err := DB.Query(`
+		SELECT id,upstream_id,COALESCE(request_id,''),COALESCE(plan,''),
+		       COALESCE(status,''),COALESCE(email,''),COALESCE(card_id,0),
+		       COALESCE(created_at,0),COALESCE(activated_at,0)
+		FROM local_cdks
+		WHERE upstream_id>0
+		ORDER BY CASE WHEN activated_at>0 THEN activated_at ELSE created_at END DESC,id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LocalDirectOrderFact{}
+	for rows.Next() {
+		var item LocalDirectOrderFact
+		if err := rows.Scan(&item.LocalID, &item.UpstreamID, &item.RequestID, &item.Plan,
+			&item.Status, &item.Email, &item.CardID, &item.CreatedAt, &item.ActivatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func normalizeCDKCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }

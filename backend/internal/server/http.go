@@ -51,6 +51,12 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := handler.InitOperations(ctx); err != nil {
 		return nil, err
 	}
+	if err := handler.InitCustomerExpiryNotifications(); err != nil {
+		return nil, err
+	}
+	if err := handler.InitCardPlatformInsights(); err != nil {
+		return nil, err
+	}
 
 	engine := gin.Default()
 
@@ -74,6 +80,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	db.StartCDKQueryCleanup(ctx)
 	handler.StartAutomation(ctx)
 	handler.StartNotificationDispatcher(ctx)
+	handler.StartCustomerExpiryNotifications(ctx)
+	handler.StartCardPlatformInsights(ctx)
 
 	return &Server{
 		engine: engine,
@@ -281,6 +289,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)
 			admin.GET("/cardplatform/plans", handler.CardPlatformPlans)
 			admin.GET("/cardplatform/balance", handler.CardPlatformBalance)
+			admin.GET("/cardplatform/insights", handler.AdminCardPlatformInsights)
 			admin.GET("/cardplatform/cdks", handler.CardPlatformListCDKs)
 			admin.GET("/cardplatform/cdks/stored", handler.CardPlatformListStoredCDKs)
 			admin.POST("/cardplatform/cdks", handler.CardPlatformIssueCDKs)

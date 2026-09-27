@@ -96,7 +96,7 @@ func TestNoCooldownMigrationRunsIdempotently(t *testing.T) {
 	}
 }
 
-func TestExactDeclineStillRemovesCardFromRandomPool(t *testing.T) {
+func TestSecondExactDeclineRemovesCardFromRandomPool(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
 	if _, err := ensureLocalCardCycle(123, "ordinary", now); err != nil {
@@ -106,6 +106,13 @@ func TestExactDeclineStillRemovesCardFromRandomPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	ok, err := localCardHasCycleCapacity(123, "ordinary", now)
+	if err != nil || !ok {
+		t.Fatal("first decline removed card", ok, err)
+	}
+	if err := recordAutomationDecline(2, 123, "failed_precharge", now+1); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = localCardHasCycleCapacity(123, "ordinary", now)
 	if err != nil || ok {
 		t.Fatal("declined card remained eligible", ok, err)
 	}

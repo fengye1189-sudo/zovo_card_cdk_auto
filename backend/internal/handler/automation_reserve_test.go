@@ -11,7 +11,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-func TestAutomationKeepsThreeUsableCards(t *testing.T) {
+func TestAutomationKeepsOneUsableCard(t *testing.T) {
 	for _, mode := range []string{"zero", "one", "two", "duplicate", "cooldown", "unselected", "insufficient", "disabled", "missing_product"} {
 		t.Run(mode, func(t *testing.T) {
 			a := newAutoFixture(t)
@@ -29,6 +29,7 @@ func TestAutomationKeepsThreeUsableCards(t *testing.T) {
 			}
 			if mode == "missing_product" {
 				p.Product = "MISSING"
+				a.empty = true
 			}
 			switch mode {
 			case "two", "duplicate", "cooldown", "unselected", "insufficient":
@@ -56,7 +57,10 @@ func TestAutomationKeepsThreeUsableCards(t *testing.T) {
 			}
 			putAutoPolicy(t, p)
 			maintainAutomationCards(context.Background())
-			want := int32(1)
+			want := int32(0)
+			if mode == "zero" {
+				want = 1
+			}
 			// The upstream client rejects duplicate candidate IDs rather than guessing.
 			if mode == "disabled" || mode == "duplicate" || mode == "missing_product" {
 				want = 0
@@ -89,9 +93,10 @@ func TestAutomationKeepsThreeUsableCards(t *testing.T) {
 	}
 }
 
-func TestAutomationContinuesUntilThreeUsableCards(t *testing.T) {
+func TestAutomationStopsOpeningAfterOneUsableCard(t *testing.T) {
 	a := newAutoFixture(t)
 	a.balance = 25
+	a.empty = true
 	p := moneyPolicy()
 	p.Topup, p.Open, p.Enroll = false, true, true
 	p.DailyOpen, p.DailyBudget = 10, 50000
@@ -105,15 +110,16 @@ func TestAutomationContinuesUntilThreeUsableCards(t *testing.T) {
 	}
 	balance := 25.0
 	verifyMoneyOperations([]cardplatform.CardChoice{{ID: 789, Status: "ACTIVE", Balance: &balance}}, p)
+	a.empty = false
 	a.extraCandidates = []any{gin.H{"card_id": 789, "skip": false, "skip_reason": "", "available_usd": 25, "light_remain": 5}}
 	dueAgain()
 	maintainAutomationCards(context.Background())
-	if a.money.Load() != 2 {
-		t.Fatal("second reserve was not opened when only two cards were usable")
+	if a.money.Load() != 1 {
+		t.Fatal("another card was opened despite a healthy working card")
 	}
 	dueAgain()
 	maintainAutomationCards(context.Background())
-	if a.money.Load() != 2 {
-		t.Fatal("opening repeated while the second reserve awaited confirmation")
+	if a.money.Load() != 1 {
+		t.Fatal("opening repeated despite a healthy working card")
 	}
 }

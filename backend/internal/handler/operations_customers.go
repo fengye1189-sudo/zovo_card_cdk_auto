@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -49,6 +50,11 @@ type operationsCustomer struct {
 	BuyerEmail            string `json:"buyer_email"`
 	TelegramID            string `json:"telegram_id"`
 	TelegramUsername      string `json:"telegram_username"`
+	IdentitySource        string `json:"identity_source"`
+	IdentityConfidence    int    `json:"identity_confidence"`
+	IdentityEvidence      string `json:"identity_evidence"`
+	ReminderReady         bool   `json:"reminder_ready"`
+	ReminderChannel       string `json:"reminder_channel"`
 }
 
 type marketplaceCustomerIdentity struct {
@@ -57,6 +63,17 @@ type marketplaceCustomerIdentity struct {
 	BuyerEmail       string `json:"buyerEmail"`
 	TelegramID       string `json:"telegramId"`
 	TelegramUsername string `json:"telegramUsername"`
+	AccountEmail     string `json:"accountEmail"`
+	Source           string `json:"source"`
+	Confidence       int    `json:"confidence"`
+	Evidence         string `json:"evidence"`
+	CandidateOrderID string `json:"candidateOrderId"`
+}
+
+type marketplaceCustomerRecord struct {
+	AccountEmail string `json:"accountEmail"`
+	ActivatedAt  int64  `json:"activatedAt"`
+	Plan         string `json:"plan"`
 }
 
 const operationsCustomerCurrentCTE = `WITH ranked_customers AS (
@@ -87,12 +104,12 @@ func operationsCustomerLocation(name string) (*time.Location, error) {
 	}
 }
 
-func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs []string) (map[string]marketplaceCustomerIdentity, error) {
+func marketplaceCustomerIdentities(ctx context.Context, orderIDs, accountEmails []string, records []marketplaceCustomerRecord) (map[string]marketplaceCustomerIdentity, error) {
 	result := map[string]marketplaceCustomerIdentity{}
-	if len(orderIDs) == 0 {
+	if len(orderIDs) == 0 && len(accountEmails) == 0 {
 		return result, nil
 	}
-	body, err := json.Marshal(map[string]any{"v": 1, "orderIds": orderIDs})
+	body, err := json.Marshal(map[string]any{"v": 1, "orderIds": orderIDs, "accountEmails": accountEmails, "records": records})
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +122,7 @@ func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs []string) (map[str
 	if url == "" {
 		url = "https://maple1189ai.com/api/internal/cdk-customer-identities"
 	}
-	req, err := http.NewRequestWithContext(ctx.Request.Context(), http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +146,10 @@ func marketplaceCustomerIdentities(ctx *gin.Context, orderIDs []string) (map[str
 	}
 	for _, item := range payload.Identities {
 		if item.OrderID != "" {
-			result[item.OrderID] = item
+			result["order:"+item.OrderID] = item
+		}
+		if email := strings.ToLower(strings.TrimSpace(item.AccountEmail)); email != "" {
+			result["email:"+email] = item
 		}
 	}
 	return result, nil
@@ -324,33 +344,87 @@ func OperationsCustomersSearch(c *gin.Context) {
 	rows.Close()
 	_ = tx.Rollback()
 	orderIDs := make([]string, 0, len(list))
+	accountEmails := make([]string, 0, len(list))
+	records := make([]marketplaceCustomerRecord, 0, len(list))
 	seenOrders := map[string]bool{}
+	seenEmails := map[string]bool{}
 	for _, item := range list {
 		if item.MarketplaceOrderID != "" && !seenOrders[item.MarketplaceOrderID] {
 			seenOrders[item.MarketplaceOrderID] = true
 			orderIDs = append(orderIDs, item.MarketplaceOrderID)
 		}
+		email := strings.ToLower(strings.TrimSpace(item.Email))
+		if email != "" && !seenEmails[email] {
+			seenEmails[email] = true
+			accountEmails = append(accountEmails, email)
+		}
+		if email != "" {
+			records = append(records, marketplaceCustomerRecord{AccountEmail: email, ActivatedAt: item.ActivatedAt, Plan: item.Plan})
+		}
 	}
 	identityNotice := ""
-	for start := 0; start < len(orderIDs); start += 100 {
-		end := start + 100
-		if end > len(orderIDs) {
-			end = len(orderIDs)
+	for start := 0; start < len(list); start += 100 {
+		orderStart, orderEnd := start, start+100
+		if orderStart > len(orderIDs) {
+			orderStart = len(orderIDs)
 		}
-		identities, lookupErr := marketplaceCustomerIdentities(c, orderIDs[start:end])
+		if orderEnd > len(orderIDs) {
+			orderEnd = len(orderIDs)
+		}
+		emailStart, emailEnd := start, start+100
+		if emailStart > len(accountEmails) {
+			emailStart = len(accountEmails)
+		}
+		if emailEnd > len(accountEmails) {
+			emailEnd = len(accountEmails)
+		}
+		recordStart, recordEnd := start, start+100
+		if recordStart > len(records) { recordStart = len(records) }
+		if recordEnd > len(records) { recordEnd = len(records) }
+		identities, lookupErr := marketplaceCustomerIdentities(c.Request.Context(), orderIDs[orderStart:orderEnd], accountEmails[emailStart:emailEnd], records[recordStart:recordEnd])
 		if lookupErr != nil {
-			identityNotice = "购买人资料暂时无法从商城读取；升级账号与订单数据仍可查看和导出。"
+			identityNotice = "商城身份暂时无法读取；未明确关联的记录按升级邮箱推定，不会自动绑定纸飞机。"
 			break
 		}
 		for i := range list {
-			identity, ok := identities[list[i].MarketplaceOrderID]
-			if !ok {
-				continue
+			identity, ok := identities["order:"+list[i].MarketplaceOrderID]
+			if ok {
+				list[i].IdentitySource = identity.Source
+				if list[i].IdentitySource == "" { list[i].IdentitySource = "marketplace_order" }
+			} else {
+				identity, ok = identities["email:"+strings.ToLower(strings.TrimSpace(list[i].Email))]
+				if ok {
+					list[i].IdentitySource = identity.Source
+					if list[i].IdentitySource == "" { list[i].IdentitySource = "upgrade_email_match" }
+				}
 			}
-			list[i].BuyerName = identity.BuyerName
-			list[i].BuyerEmail = identity.BuyerEmail
-			list[i].TelegramID = identity.TelegramID
-			list[i].TelegramUsername = identity.TelegramUsername
+			if ok {
+				list[i].BuyerName = identity.BuyerName
+				list[i].BuyerEmail = identity.BuyerEmail
+				list[i].TelegramID = identity.TelegramID
+				list[i].TelegramUsername = identity.TelegramUsername
+				list[i].IdentityConfidence = identity.Confidence
+				list[i].IdentityEvidence = identity.Evidence
+				list[i].ReminderReady = true
+				if identity.Confidence >= 85 && identity.TelegramID != "" {
+					list[i].ReminderChannel = "TELEGRAM"
+				} else if identity.Confidence >= 85 && identity.BuyerEmail != "" {
+					list[i].ReminderChannel = "EMAIL"
+				} else {
+					list[i].ReminderChannel = "UPGRADE_EMAIL"
+				}
+			}
+		}
+	}
+	for i := range list {
+		if list[i].IdentitySource == "" {
+			list[i].BuyerName = "升级账号本人"
+			list[i].BuyerEmail = list[i].Email
+			list[i].IdentitySource = "upgrade_email_inferred"
+			list[i].IdentityConfidence = 35
+			list[i].IdentityEvidence = "仅有升级邮箱，尚未找到商城订单、下单邮箱或 Telegram 的明确对应关系"
+			list[i].ReminderReady = true
+			list[i].ReminderChannel = "UPGRADE_EMAIL"
 		}
 	}
 
