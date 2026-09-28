@@ -93,6 +93,7 @@ const navItems = computed(() => [
   { path: '/ops/automation', label: '自动化', icon: 'Setting', permission: 'system.manage' },
   { path: '/ops/finance', label: '财务核对', icon: 'Wallet', permission: 'system.manage' },
   { path: '/ops/health', label: '运行与备份', icon: 'Monitor', permission: 'system.manage' },
+  { path: '/ops/legacy-overview', label: '版本更新', icon: 'Refresh', permission: 'system.manage' },
   { path: '/ops/messages', label: '通知与回复', icon: 'Bell', permission: 'records.read' },
   { path: '/ops/team', label: '团队权限', icon: 'User', permission: 'team.manage' },
   { path: '/ops/api-access', label: '商城接入', icon: 'Connection', permission: 'system.manage' },
