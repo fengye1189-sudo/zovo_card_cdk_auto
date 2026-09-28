@@ -398,6 +398,40 @@ func TestAutomationTopupLedgerConfirmsAfterCardLeavesInventory(t *testing.T) {
 	}
 }
 
+func TestAutomationInventorySnapshotMarksRemovedHistoricalCard(t *testing.T) {
+	a := newAutoFixture(t)
+	scope := financeScope()
+	now := time.Now().Unix()
+	if _, err := db.DB.Exec(`INSERT INTO automation_money
+		(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
+		VALUES('historical-card','topup',123,1576,1592,500,?,'unknown',?)`, scope, now-60); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := automationInventory(context.Background(), cardplatform.New(cardplatform.LoadConfig()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = persistAutomationInventory(cards, scope, now); err != nil {
+		t.Fatal(err)
+	}
+	var present int
+	var last4 string
+	if err = db.DB.QueryRow("SELECT present,last4 FROM automation_inventory_snapshot WHERE scope=? AND card_id=123", scope).Scan(&present, &last4); err != nil || present != 1 || last4 != "1234" {
+		t.Fatal("present card snapshot incorrect", present, last4, err)
+	}
+	a.deleted.Store(1)
+	cards, err = automationInventory(context.Background(), cardplatform.New(cardplatform.LoadConfig()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = persistAutomationInventory(cards, scope, now+60); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.DB.QueryRow("SELECT present,last4 FROM automation_inventory_snapshot WHERE scope=? AND card_id=123", scope).Scan(&present, &last4); err != nil || present != 0 || last4 != "1234" {
+		t.Fatal("removed historical card was not retained as missing", present, last4, err)
+	}
+}
+
 func TestAutomationUnknownTopupRequiresAndAcceptsExactLedgerEvidence(t *testing.T) {
 	a := newAutoFixture(t)
 	p := moneyPolicy()

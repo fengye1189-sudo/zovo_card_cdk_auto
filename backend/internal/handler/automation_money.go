@@ -163,6 +163,48 @@ func automationInventory(ctx context.Context, cli *cardplatform.Client) ([]cardp
 	}
 	return nil, &inventoryScanError{"卡片分页扫描未完成"}
 }
+
+// persistAutomationInventory records only a fully completed inventory scan.
+// It never deletes historical card references: cards absent from the latest
+// Zovo response are marked missing so an old funding record cannot be mistaken
+// for a currently usable card.
+func persistAutomationInventory(inventory []cardplatform.CardChoice, scope string, now int64) error {
+	if strings.TrimSpace(scope) == "" || now <= 0 {
+		return fmt.Errorf("invalid inventory snapshot")
+	}
+	tx, err := db.DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.Exec("UPDATE automation_inventory_snapshot SET present=0,synced_at=? WHERE scope=?", now, scope); err != nil {
+		return err
+	}
+	// Ensure cards referenced only by historical money operations also receive
+	// an explicit missing state after this authoritative full scan.
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO automation_inventory_snapshot
+		(scope,card_id,present,synced_at,last_seen_at)
+		SELECT scope,CASE WHEN action IN ('open','pro5x_reserve_open') AND result_card_id>0 THEN result_card_id ELSE card_id END,
+		0,?,0 FROM automation_money
+		WHERE scope=? AND CASE WHEN action IN ('open','pro5x_reserve_open') AND result_card_id>0 THEN result_card_id ELSE card_id END>0`, now, scope); err != nil {
+		return err
+	}
+	for _, card := range inventory {
+		if card.ID <= 0 {
+			return fmt.Errorf("invalid card in inventory snapshot")
+		}
+		if _, err = tx.Exec(`INSERT INTO automation_inventory_snapshot
+			(scope,card_id,present,last4,product_code,provider_status,synced_at,last_seen_at)
+			VALUES(?,?,1,?,?,?,?,?)
+			ON CONFLICT(scope,card_id) DO UPDATE SET
+			present=1,last4=excluded.last4,product_code=excluded.product_code,
+			provider_status=excluded.provider_status,synced_at=excluded.synced_at,
+			last_seen_at=excluded.last_seen_at`, scope, card.ID, card.Last4, card.Product, card.Status, now, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 func maintainAutomationCards(ctx context.Context) {
 	now := time.Now().Unix()
 	lock, e := db.DB.Exec("UPDATE automation_runtime SET money_after=? WHERE id=1 AND money_after<=?", now+300, now)
@@ -188,6 +230,11 @@ func maintainAutomationCards(ctx context.Context) {
 	scope := localHash(scopeConfig.SiteBase + "|" + scopeConfig.APIKey)
 	cli := cardplatform.New(scopeConfig)
 	inventory, e := automationInventory(ctx, cli)
+	if e == nil {
+		if snapshotErr := persistAutomationInventory(inventory, scope, now); snapshotErr != nil {
+			e = &inventoryScanError{"本地卡片同步快照写入失败"}
+		}
+	}
 	recordInventoryScan(e)
 	if e != nil {
 		return
@@ -650,7 +697,18 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 		}
 		if !matched {
 			if now-op.at > 1800 {
-				autoAlert("money", 0, "资金请求超过 30 分钟仍未核查到预期余额，请在 Zovo 核对；不会自动重试。")
+				present := false
+				for _, card := range inventory {
+					if card.ID == target {
+						present = true
+						break
+					}
+				}
+				if !present {
+					autoAlert("money", 0, fmt.Sprintf("资金请求超过 30 分钟仍未找到成功流水；Zovo 当前卡片列表已不含卡片 ID #%d。该编号是历史内部 ID，不是卡号尾号；请在充值记录或资金流水核对，不会自动重试。", target))
+				} else {
+					autoAlert("money", 0, "资金请求超过 30 分钟仍未核查到预期余额，请在 Zovo 充值记录或资金流水核对；不会自动重试。")
+				}
 			}
 			continue
 		}

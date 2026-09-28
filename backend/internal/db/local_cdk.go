@@ -245,6 +245,19 @@ func InitLocalCDK() error {
   upstream_id INTEGER NOT NULL, confirmed_at INTEGER NOT NULL,
   UNIQUE(scope,source,upstream_id)
  );
+ -- Last fully synchronized Zovo card inventory. Historical money operations
+ -- remain immutable, while this snapshot tells the UI whether their card is
+ -- still present in the current provider account.
+ CREATE TABLE IF NOT EXISTS automation_inventory_snapshot (
+  scope TEXT NOT NULL, card_id INTEGER NOT NULL,
+  present INTEGER NOT NULL DEFAULT 0,
+  last4 TEXT NOT NULL DEFAULT '', product_code TEXT NOT NULL DEFAULT '',
+  provider_status TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(scope,card_id)
+ );
+ CREATE INDEX IF NOT EXISTS idx_automation_inventory_present
+ ON automation_inventory_snapshot(scope,present,synced_at);
  CREATE TABLE IF NOT EXISTS automation_runtime (id INTEGER PRIMARY KEY CHECK(id=1), heartbeat INTEGER NOT NULL DEFAULT 0, money_after INTEGER NOT NULL DEFAULT 0);
  INSERT OR IGNORE INTO automation_runtime(id) VALUES(1);
  CREATE TABLE IF NOT EXISTS automation_card_remark_runtime (

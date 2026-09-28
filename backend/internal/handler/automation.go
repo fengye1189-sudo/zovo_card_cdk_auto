@@ -466,13 +466,23 @@ func AdminAutomationStatus(c *gin.Context) {
 	}
 	rows.Close()
 	operations := []gin.H{}
-	rows, e = db.DB.Query("SELECT id,action,card_id,amount_minor,reserved_minor,state,created_at,result_card_id FROM automation_money ORDER BY created_at DESC LIMIT 100")
+	rows, e = db.DB.Query(`SELECT m.id,m.action,m.card_id,m.amount_minor,m.reserved_minor,m.state,m.created_at,m.result_card_id,
+	 COALESCE(s.present,-1),COALESCE(s.last4,''),COALESCE(s.product_code,''),COALESCE(s.provider_status,''),COALESCE(s.synced_at,0)
+	 FROM automation_money m LEFT JOIN automation_inventory_snapshot s
+	 ON s.scope=m.scope AND s.card_id=CASE WHEN m.action IN ('open','pro5x_reserve_open') AND m.result_card_id>0 THEN m.result_card_id ELSE m.card_id END
+	 ORDER BY m.created_at DESC LIMIT 100`)
 	if e == nil {
 		for rows.Next() {
-			var id, action, state string
-			var card, amount, cost, at, result int64
-			if rows.Scan(&id, &action, &card, &amount, &cost, &state, &at, &result) == nil {
-				operations = append(operations, gin.H{"id": id, "action": action, "card_id": card, "amount_minor": amount, "reserved_minor": cost, "state": state, "created_at": at, "result_card_id": result})
+			var id, action, state, last4, product, providerStatus string
+			var card, amount, cost, at, result, present, syncedAt int64
+			if rows.Scan(&id, &action, &card, &amount, &cost, &state, &at, &result, &present, &last4, &product, &providerStatus, &syncedAt) == nil {
+				inventoryState := "unknown"
+				if present == 1 {
+					inventoryState = "present"
+				} else if present == 0 {
+					inventoryState = "missing"
+				}
+				operations = append(operations, gin.H{"id": id, "action": action, "card_id": card, "amount_minor": amount, "reserved_minor": cost, "state": state, "created_at": at, "result_card_id": result, "inventory_state": inventoryState, "card_last4": last4, "card_product_code": product, "provider_status": providerStatus, "inventory_synced_at": syncedAt})
 			}
 		}
 		rows.Close()
