@@ -264,8 +264,8 @@ func maintainAutomationCards(ctx context.Context) {
 	if e != nil || json.Unmarshal([]byte(localRaw), &cfg) != nil || !cfg.Enabled {
 		return
 	}
-	if cfg.MinCardBalanceMinor <= 0 || (p.Topup && p.Target < cfg.MinCardBalanceMinor) || (p.Open && p.InitAmount < cfg.MinCardBalanceMinor) {
-		autoAlert("money", 0, "自动补款目标或开卡金额低于支付卡余额门槛，未执行资金操作。")
+	if cfg.MinCardBalanceMinor <= 0 || (p.Open && p.InitAmount < cfg.MinCardBalanceMinor) {
+		autoAlert("money", 0, "支付卡余额门槛无效或开卡金额低于该门槛，未执行资金操作。")
 		return
 	}
 	var fee int64
@@ -363,6 +363,15 @@ func maintainAutomationCards(ctx context.Context) {
 	openBIN, selectionMode := "", ""
 	var cardID, amount, before, cost int64
 	if p.Topup {
+		// The payment-card balance requirement is the dynamic funding goal. The
+		// automation target setting is retained only for database compatibility;
+		// it must not turn the USD 30 card ceiling into a fill-to target. Recharge
+		// only the shortfall needed for Plus, rounded up to the provider's USD 10
+		// recharge minimum, and never cross the saved card ceiling.
+		fundingFloor := cfg.MinCardBalanceMinor
+		if p.Threshold > fundingFloor {
+			fundingFloor = p.Threshold
+		}
 		for _, card := range inventory {
 			var dedicated int
 			if err := db.DB.QueryRow(`SELECT COUNT(*)
@@ -386,7 +395,7 @@ func maintainAutomationCards(ctx context.Context) {
 				continue
 			}
 			balance, ok := usdMinor(card.Balance)
-			if !ok || balance >= p.Threshold {
+			if !ok || balance >= fundingFloor {
 				continue
 			}
 			var busy int
@@ -397,7 +406,7 @@ func maintainAutomationCards(ctx context.Context) {
 			// A verified earlier topup does not block replenishment after another
 			// completed payment. Pending/unknown funding, busy cards and the
 			// rolling daily budget are still guarded before reservation.
-			amount = p.Target - balance
+			amount = fundingFloor - balance
 			// Respect the recharge minimum even when only a small deficit remains.
 			if amount < 1000 {
 				amount = 1000

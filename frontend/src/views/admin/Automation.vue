@@ -18,6 +18,7 @@
         <h3 class="text-lg font-semibold mb-4">资金自动化（从 Zovo 平台余额转入卡，不是自动充 USDT）</h3>
         <el-alert title="资金开关默认关闭。只管理你勾选的卡及明确授权自动开出的卡；拒付后不换卡重付。资金预算仅覆盖自动开卡和补款，不是订阅扣款总预算。" type="warning" :closable="false" class="mb-4" />
         <p class="text-sm text-muted mb-4">GPTPRO5x卡冲升级与 Pro 20X 商品在 <router-link class="app-link" to="/ops/products">商品与套餐</router-link>管理。客户确认兑换后分别为专卡初充 $120 / $150；两者共用过去 24 小时预算、每日开卡数量及平台余额保留额，普通卡的单次 $22 资金上限不用于 Pro 专卡。未确认到账不会提交升级付款。</p>
+        <p class="text-sm text-muted mb-4">普通 Plus 卡按「卡密管理」中的支付余额门槛动态补足；差额不足 $10 时按平台最低 $10 补款。卡内余额上限只是硬上限，不是每次补款目标。</p>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <el-form-item label="自动补充已勾选卡的余额"><el-switch v-model="settings.topup_enabled" /><p class="hint">付款结果已确认且余额低于阈值时可再次补款；有在途或待核对订单、资金未确认时不补款。仍受每日预算和单次上限限制；5X 专卡完成 3 次 5X 后才进入 Plus 池。</p></el-form-item>
           <el-form-item label="两次明确拒付后自动销卡退款"><el-switch v-model="settings.retire_enabled" /><p class="hint">同一卡累计第 2 次上游明确拒付后进入待销；第 1 次只记入健康记录。销卡前会确认没有在途订单或待核对资金，结果不明时不会重复提交。</p></el-form-item>
@@ -58,7 +59,6 @@ const moneyFields=[
  {key:'max_operation_minor',label:'普通卡单次资金操作最高总费用',hint:'普通开卡和补款含本金及手续费，不得超过总预算；Pro 专卡走单独的计划金额与共享 24 小时预算。'},
  {key:'wallet_floor_minor',label:'平台可消费余额最低保留额',hint:'在平台自身保证金要求之外，再额外保留这笔可消费余额。'},
  {key:'threshold_minor',label:'卡余额低于此值时补款',hint:'只补已勾选且符合上游用卡规则的卡。'},
- {key:'target_minor',label:'每次补到的卡余额',hint:'必须高于补款触发值，并满足产品最低充值额。'},
  {key:'card_ceiling_minor',label:'卡内余额上限',hint:'按操作前实时余额核查；其他渠道同时操作可能改变余额。'},
  {key:'init_amount_minor',label:'自动开卡初始充值额',hint:'另加产品开卡费，必须符合产品最低金额。'}]
 const health=computed(()=>report.heartbeat && clock.value/1000-report.heartbeat<600?'后台正在运行':'暂无近期心跳，请刷新检查')
@@ -75,7 +75,7 @@ function validateSettings(){
  for(const key of ['daily_budget_minor','max_operation_minor','wallet_floor_minor','threshold_minor','target_minor','card_ceiling_minor','init_amount_minor','daily_open_limit']){if(!Number.isFinite(n(key))||n(key)<0||n(key)>100000000)return '存在不正确的金额或数量，请检查后再保存。'}
  if((settings.renewal_enabled||settings.topup_enabled||settings.open_enabled||settings.retire_enabled)&&!settings.sync_enabled)return '开启自动取消续费、自动补款、自动开卡或自动销卡前，必须同时开启“后台持续查单”。'
  if(settings.topup_enabled||settings.open_enabled){if(n('daily_budget_minor')<=0||n('max_operation_minor')<=0||n('max_operation_minor')>n('daily_budget_minor')||n('card_ceiling_minor')<=0)return '开启资金自动化时，请填写正数的 24 小时总预算、单次上限和卡内余额上限；单次上限不能超过总预算。'}
- if(settings.topup_enabled&&(n('threshold_minor')<=0||n('target_minor')<=n('threshold_minor')||n('target_minor')>n('card_ceiling_minor')))return '自动补款要求：触发余额大于 0、补到的余额高于触发值，且不超过卡内余额上限。'
+ if(settings.topup_enabled&&n('threshold_minor')<=0)return '自动补款要求：触发余额必须大于 0。'
  if(settings.open_enabled&&(n('init_amount_minor')<=0||n('init_amount_minor')>n('card_ceiling_minor')||n('daily_open_limit')<1||n('daily_open_limit')>20||(!settings.auto_product_enabled&&!String(settings.product_code||'').trim())||!String(settings.first_name||'').trim()||!String(settings.last_name||'').trim()))return '自动开卡要求：初始充值额、每日数量、持卡人名和姓均须完整填写；关闭随机卡头时还必须填写产品码，且初始充值额不能超过卡内余额上限。'
  return ''
 }

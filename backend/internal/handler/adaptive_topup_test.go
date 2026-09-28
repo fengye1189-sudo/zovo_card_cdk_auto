@@ -13,9 +13,10 @@ func TestAdaptiveTopupBoundaries(t *testing.T) {
 		balance       float64
 		ceiling, want int64
 	}{
-		{"empty", 0, 2600, 1800}, {"after_upgrade", 2.13, 2600, 1587},
+		{"empty", 0, 2600, 1600}, {"after_upgrade", 2.13, 2600, 1387},
 		{"eight", 8, 2600, 1000}, {"near_threshold", 15.86, 2600, 1000},
-		{"at_threshold", 15.87, 2600, 0}, {"funded", 18, 2600, 0},
+		{"at_threshold_but_below_plus_floor", 15.87, 2600, 1000}, {"funded", 18, 2600, 0},
+		{"plus_fx_example", 14.24, 3000, 1000},
 		{"actual_ceiling", 15.86, 2150, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
