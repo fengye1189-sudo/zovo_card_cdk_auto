@@ -18,6 +18,7 @@ import (
 )
 
 const customerExpiryReminderInterval = 5 * time.Minute
+const customerExpiryReminderLead = 3 * 24 * time.Hour
 
 var customerExpiryReminderMu sync.Mutex
 
@@ -111,7 +112,7 @@ func seedCustomerExpiryNotifications(now int64) error {
 func dueCustomerExpiryNotifications(now int64, limit int) ([]customerExpiryReminder, error) {
 	rows, err := db.DB.Query(`SELECT event_id,local_id,marketplace_order_id,account_email,plan,activated_at,due_at,expiry_estimated
 		FROM customer_expiry_notifications WHERE status='pending' AND due_at<=?
-		ORDER BY due_at,event_id LIMIT ?`, now, limit)
+		ORDER BY due_at,event_id LIMIT ?`, now+int64(customerExpiryReminderLead/time.Second), limit)
 	if err != nil {
 		return nil, err
 	}
