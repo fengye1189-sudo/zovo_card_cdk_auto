@@ -219,6 +219,7 @@ func setupRoutes(r *gin.Engine) {
 		// accepts a customer identity, plaintext CDK, credential, or browser cookie.
 		internal := api.Group("/internal")
 		internal.POST("/local-cdk/bind", handler.MarketplaceLocalCDKBind)
+		internal.POST("/managed-cdk/history", handler.MarketplaceManagedHistory)
 		// Marketplace-only issuer invoice lookup. The HMAC-authenticated caller
 		// receives an upstream URL only after its order is bound to an
 		// authoritative completion; no public endpoint exposes those URLs.

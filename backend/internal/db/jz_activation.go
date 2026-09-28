@@ -230,6 +230,42 @@ func RecordManagedActivationResultDetails(codeHash, taskID, plan, status, email,
 	return err
 }
 
+// ImportManagedActivationCompletion restores a provider-confirmed historical
+// completion without retaining the plaintext CDK or customer credential.  An
+// existing confirmed completion keeps its original renewal window.
+func ImportManagedActivationCompletion(codeHash, taskID, plan, email string, activatedAt, expiresAt int64, now time.Time) error {
+	if DB == nil {
+		return sql.ErrConnDone
+	}
+	if activatedAt <= 0 || expiresAt <= activatedAt {
+		return ErrManagedAttemptChanged
+	}
+	nowUnix := now.UTC().Unix()
+	_, err := DB.Exec(`
+		INSERT INTO managed_activation_attempts(
+			code_hash,attempt_hash,task_id,plan,status,account_email,
+			submit_claimed_at,query_started_at,query_expires_at,created_at,updated_at,
+			activated_at,subscription_expires_at,expiry_estimated
+		) VALUES(?,?,?,?,'completed',?,?,?,?,?,?,?,?,1)
+		ON CONFLICT(code_hash) DO UPDATE SET
+			task_id=CASE WHEN LOWER(TRIM(managed_activation_attempts.status))='completed' AND managed_activation_attempts.task_id<>'' THEN managed_activation_attempts.task_id ELSE excluded.task_id END,
+			plan=CASE WHEN LOWER(TRIM(managed_activation_attempts.status))='completed' AND managed_activation_attempts.plan<>'' THEN managed_activation_attempts.plan ELSE excluded.plan END,
+			status='completed',
+			account_email=CASE WHEN LOWER(TRIM(managed_activation_attempts.status))='completed' AND managed_activation_attempts.account_email<>'' THEN managed_activation_attempts.account_email ELSE excluded.account_email END,
+			failure_reason='',
+			submit_claimed_at=CASE WHEN managed_activation_attempts.submit_claimed_at>0 THEN managed_activation_attempts.submit_claimed_at ELSE excluded.submit_claimed_at END,
+			query_started_at=CASE WHEN managed_activation_attempts.query_started_at>0 THEN managed_activation_attempts.query_started_at ELSE excluded.query_started_at END,
+			query_expires_at=CASE WHEN managed_activation_attempts.query_expires_at>0 THEN managed_activation_attempts.query_expires_at ELSE excluded.query_expires_at END,
+			updated_at=excluded.updated_at,
+			activated_at=CASE WHEN LOWER(TRIM(managed_activation_attempts.status))='completed' AND managed_activation_attempts.activated_at>0 THEN managed_activation_attempts.activated_at ELSE excluded.activated_at END,
+			subscription_expires_at=CASE WHEN LOWER(TRIM(managed_activation_attempts.status))='completed' AND managed_activation_attempts.subscription_expires_at>managed_activation_attempts.activated_at THEN managed_activation_attempts.subscription_expires_at ELSE excluded.subscription_expires_at END,
+			expiry_estimated=1
+	`, codeHash, "history:"+codeHash, taskID, plan, email,
+		activatedAt, activatedAt, activatedAt+int64(managedQueryWindow/time.Second),
+		activatedAt, nowUnix, activatedAt, expiresAt)
+	return err
+}
+
 func GetManagedActivationByCodeHash(codeHash string) (*ManagedActivationAttempt, error) {
 	if DB == nil {
 		return nil, sql.ErrConnDone

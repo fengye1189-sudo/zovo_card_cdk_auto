@@ -22,13 +22,17 @@ import (
 
 const completionBridgeTestSecret = "0123456789abcdef0123456789abcdef"
 
-func signedMarketplaceBindCall(t *testing.T, router *gin.Engine, body marketplaceCompletionBindRequest, purpose string, stamp int64) (int, map[string]any) {
+func signedMarketplaceBindCall(t *testing.T, router *gin.Engine, body any, purpose string, stamp int64) (int, map[string]any) {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPost, "/internal/local-cdk/bind", bytes.NewReader(raw))
+	path := "/internal/local-cdk/bind"
+	if purpose == marketplaceManagedHistoryPurpose {
+		path = "/internal/managed-cdk/history"
+	}
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
 	request.Header.Set("Content-Type", "application/json")
 	stampText := strconvFormatInt(stamp)
 	request.Header.Set("X-MaplePass-Time", stampText)
@@ -38,6 +42,34 @@ func signedMarketplaceBindCall(t *testing.T, router *gin.Engine, body marketplac
 	var data map[string]any
 	_ = json.Unmarshal(response.Body.Bytes(), &data)
 	return response.Code, data
+}
+
+func TestMarketplaceManagedHistoryImportsCompletedJZCustomerIdempotently(t *testing.T) {
+	f := newLocalFixture(t)
+	f.router.POST("/internal/managed-cdk/history", MarketplaceManagedHistory)
+	t.Setenv("CDK_SSO_SHARED_SECRET", completionBridgeTestSecret)
+	codeHash := strings.Repeat("e", 64)
+	orderID := "018f27ef-7a39-7e91-89ab-cdef01234567"
+	request := marketplaceManagedHistoryRequest{
+		CodeHash: codeHash, OrderID: orderID, TaskID: "JZ-HISTORY-1", Plan: "plus",
+		Email: "history@example.com", CompletedAt: "2026-08-20T10:30:00+08:00",
+	}
+	status, body := signedMarketplaceBindCall(t, f.router, request, marketplaceManagedHistoryPurpose, time.Now().UnixMilli())
+	if status != http.StatusOK || body["ok"] != true || body["alreadyBound"] != false {
+		t.Fatalf("first history import: status=%d body=%v", status, body)
+	}
+	status, body = signedMarketplaceBindCall(t, f.router, request, marketplaceManagedHistoryPurpose, time.Now().UnixMilli()+1)
+	if status != http.StatusOK || body["alreadyBound"] != true {
+		t.Fatalf("repeated history import: status=%d body=%v", status, body)
+	}
+	row, err := db.GetManagedActivationByCodeHash(codeHash)
+	if err != nil || row == nil {
+		t.Fatalf("history row missing: row=%+v err=%v", row, err)
+	}
+	if row.Status != "completed" || row.AccountEmail != "history@example.com" || row.TaskID != "JZ-HISTORY-1" ||
+		row.ActivatedAt <= 0 || row.SubscriptionExpiresAt <= row.ActivatedAt || !row.ExpiryEstimated {
+		t.Fatalf("history row incomplete: %+v", row)
+	}
 }
 
 // strconvFormatInt keeps test request construction clear without leaking any

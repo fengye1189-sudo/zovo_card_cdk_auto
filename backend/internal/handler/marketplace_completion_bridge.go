@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/mail"
 	"net/http"
 	"os"
 	"strconv"
@@ -25,6 +26,7 @@ import (
 const (
 	marketplaceCompletionBindPurpose     = "cdk-completion-bind:v1"
 	marketplaceCompletionDeliveryPurpose = "cdk-completion:v1"
+	marketplaceManagedHistoryPurpose     = "cdk-managed-history:v1"
 	defaultCompletionWebhookURL          = "https://maple1189ai.com/api/internal/cdk-completion"
 	marketplaceCompletionLeaseSeconds    = int64(60)
 	marketplaceCompletionBatchSize       = 5
@@ -44,6 +46,15 @@ var (
 type marketplaceCompletionBindRequest struct {
 	CodeHash string `json:"codeHash"`
 	OrderID  string `json:"orderId"`
+}
+
+type marketplaceManagedHistoryRequest struct {
+	CodeHash    string `json:"codeHash"`
+	OrderID     string `json:"orderId"`
+	TaskID      string `json:"taskId"`
+	Plan        string `json:"plan"`
+	Email       string `json:"accountEmail"`
+	CompletedAt string `json:"completedAt"`
 }
 
 type marketplaceCompletionEvent struct {
@@ -110,6 +121,53 @@ func MarketplaceLocalCDKBind(c *gin.Context) {
 			}
 			return "managed"
 		}()})
+}
+
+// MarketplaceManagedHistory imports one provider-confirmed historical JZ
+// completion.  The caller sends only the irreversible code hash and the
+// minimal renewal fields; plaintext CDKs and credentials never cross or persist.
+func MarketplaceManagedHistory(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	raw, ok := verifyMarketplaceCompletionRequest(c, marketplaceManagedHistoryPurpose)
+	if !ok {
+		return
+	}
+	var req marketplaceManagedHistoryRequest
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		localError(c, http.StatusBadRequest, "请求格式不正确")
+		return
+	}
+	codeHash, validHash := canonicalCodeHash(req.CodeHash)
+	orderID, validOrder := canonicalMarketplaceOrderID(req.OrderID)
+	taskID := strings.TrimSpace(req.TaskID)
+	plan := strings.ToLower(strings.TrimSpace(req.Plan))
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	completedAt, timeErr := time.Parse(time.RFC3339, strings.TrimSpace(req.CompletedAt))
+	address, emailErr := mail.ParseAddress(email)
+	if !validHash || !validOrder || taskID == "" || len(taskID) > 200 ||
+		plan == "" || len(plan) > 64 || emailErr != nil || !strings.EqualFold(address.Address, email) ||
+		timeErr != nil || completedAt.IsZero() || completedAt.After(time.Now().Add(5*time.Minute)) {
+		localError(c, http.StatusBadRequest, "请求参数不正确")
+		return
+	}
+	alreadyBound, err := bindMarketplaceManagedCDK(codeHash, orderID, time.Now().Unix())
+	if errors.Is(err, errMarketplaceBindingConflict) {
+		localError(c, http.StatusConflict, "历史记录归属冲突")
+		return
+	}
+	if err != nil {
+		localError(c, http.StatusServiceUnavailable, "历史记录归属暂时无法保存")
+		return
+	}
+	activatedAt := completedAt.UTC().Unix()
+	expiresAt := completedAt.AddDate(0, 1, 0).UTC().Unix()
+	if err := db.ImportManagedActivationCompletion(codeHash, taskID, plan, email, activatedAt, expiresAt, time.Now()); err != nil {
+		localError(c, http.StatusServiceUnavailable, "历史成功记录暂时无法保存")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "alreadyBound": alreadyBound})
 }
 
 // bindMarketplaceManagedCDK records a trusted marketplace delivery even before
