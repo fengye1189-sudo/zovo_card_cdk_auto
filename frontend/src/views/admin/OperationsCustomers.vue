@@ -14,7 +14,7 @@
         <div class="grid grid-cols-3 gap-2 text-center">
           <button class="metric" :class="{ 'metric-active': isSelected(item.plan, 'active') }" type="button" :disabled="loading" @click="toggleSegment(item.plan, 'active')"><strong>{{ item.valid_accounts }}</strong><span>有效账号</span></button>
           <button class="metric" :class="{ 'metric-active': isSelected(item.plan, 'new_today') }" type="button" :disabled="loading" @click="toggleSegment(item.plan, 'new_today')"><strong>{{ item.new_today }}</strong><span>今日新增</span></button>
-          <button class="metric" :class="{ 'metric-active': isSelected(item.plan, 'expiring_3d') }" type="button" :disabled="loading" @click="toggleSegment(item.plan, 'expiring_3d')"><strong>{{ item.expiring_3d }}</strong><span>3天内到期</span></button>
+          <button class="metric" :class="{ 'metric-active': isSelected(item.plan, 'expiring_today') }" type="button" :disabled="loading" @click="toggleSegment(item.plan, 'expiring_today')"><strong>{{ item.expiring_today }}</strong><span>今日到期</span></button>
         </div>
       </article>
     </section>
@@ -22,7 +22,7 @@
     <section class="grid gap-4 sm:grid-cols-3">
       <button class="card text-left" :class="{ 'summary-active': isSelected('', 'active') }" type="button" :disabled="loading" @click="toggleSegment('', 'active')"><p class="text-sm text-muted">合计 · 有效账号</p><p class="mt-2 text-3xl font-bold mono">{{ totals.valid_accounts }}</p></button>
       <button class="card text-left" :class="{ 'summary-active': isSelected('', 'new_today') }" type="button" :disabled="loading" @click="toggleSegment('', 'new_today')"><p class="text-sm text-muted">合计 · 今日新增</p><p class="mt-2 text-3xl font-bold mono">{{ totals.new_today }}</p></button>
-      <button class="card text-left" :class="{ 'summary-active': isSelected('', 'expiring_3d') }" type="button" :disabled="loading" @click="toggleSegment('', 'expiring_3d')"><p class="text-sm text-muted">合计 · 3天内到期</p><p class="mt-2 text-3xl font-bold mono">{{ totals.expiring_3d }}</p></button>
+      <button class="card text-left" :class="{ 'summary-active': isSelected('', 'expiring_today') }" type="button" :disabled="loading" @click="toggleSegment('', 'expiring_today')"><p class="text-sm text-muted">合计 · 今日到期</p><p class="mt-2 text-3xl font-bold mono">{{ totals.expiring_today }}</p></button>
     </section>
 
     <section v-if="detailsOpen" class="card space-y-4">
@@ -96,7 +96,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 
-type PlanSummary = { plan: string; valid_accounts: number; new_today: number; expiring_3d: number }
+type PlanSummary = { plan: string; valid_accounts: number; new_today: number; expiring_today: number }
 type Customer = {
   id: number
   email: string
@@ -121,8 +121,8 @@ type Customer = {
 
 const defaults = () => ({ q: '', plan: '', state: 'active', expiry_days: 0, timezone: 'Asia/Bangkok', segment: '' })
 const filters = reactive(defaults())
-const planCards = ref<PlanSummary[]>(['plus', 'go', 'pro_5x', 'pro_20x'].map((plan) => ({ plan, valid_accounts: 0, new_today: 0, expiring_3d: 0 })))
-const totals = reactive({ valid_accounts: 0, new_today: 0, expiring_3d: 0 })
+const planCards = ref<PlanSummary[]>(['plus', 'go', 'pro_5x', 'pro_20x'].map((plan) => ({ plan, valid_accounts: 0, new_today: 0, expiring_today: 0 })))
+const totals = reactive({ valid_accounts: 0, new_today: 0, expiring_today: 0 })
 const dataQuality = reactive({ completed: 0, missing_email: 0, missing_dates: 0 })
 const rows = ref<Customer[]>([])
 const total = ref(0)
@@ -137,7 +137,7 @@ const loading = ref(false)
 const exporting = ref(false)
 const detailsOpen = ref(false)
 
-const segmentLabels: Record<string, string> = { active: '有效账号', new_today: '今日新增', expiring_3d: '3天内到期' }
+const segmentLabels: Record<string, string> = { active: '有效账号', new_today: '今日新增', expiring_today: '今日到期' }
 
 const detailTitle = computed(() => {
   const scope = filters.plan ? planLabel(filters.plan) : '全部套餐'

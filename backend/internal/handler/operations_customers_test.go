@@ -32,7 +32,7 @@ func TestOperationsCustomerDashboardDeduplicatesLatestAccountAndFiltersExpiry(t 
 	insertCustomerCompletion(t, "old-a", "CustomerA@Example.com", "plus", now-10*86400, now+20*86400, 1)
 	insertCustomerCompletion(t, "new-a", "customera@example.com", "pro_5x", now-86400, now+29*86400, 1)
 	insertCustomerCompletion(t, "today-b", "b@example.com", "plus", now, now+30*86400, 1)
-	insertCustomerCompletion(t, "soon-c", "c@example.com", "plus", now-5*86400, now+2*86400, 1)
+	insertCustomerCompletion(t, "soon-c", "c@example.com", "plus", now-5*86400, now+60, 1)
 	insertCustomerCompletion(t, "expired-d", "d@example.com", "plus", now-40*86400, now-86400, 0)
 	if _, err := db.DB.Exec(`INSERT INTO local_cdks
 		(code_hash,prefix,plan,status,expires_at,created_at,email)
@@ -54,8 +54,19 @@ func TestOperationsCustomerDashboardDeduplicatesLatestAccountAndFiltersExpiry(t 
 		item := raw.(map[string]any)
 		plans[item["plan"].(string)] = item
 	}
-	if plans["plus"]["valid_accounts"] != float64(2) || plans["plus"]["new_today"] != float64(1) || plans["plus"]["expiring_3d"] != float64(1) {
+	if plans["plus"]["valid_accounts"] != float64(2) || plans["plus"]["new_today"] != float64(1) || plans["plus"]["expiring_today"] != float64(1) {
 		t.Fatal("incorrect Plus retention summary", plans["plus"])
+	}
+
+	status, body = f.call("/customers/search", gin.H{
+		"page": 1, "page_size": 25, "plan": "plus", "segment": "expiring_today", "timezone": "Asia/Bangkok",
+	})
+	if status != 200 || body["total"] != float64(1) {
+		t.Fatal("today-expiry metric segment failed", status, body)
+	}
+	row := body["list"].([]any)[0].(map[string]any)
+	if row["email"] != "c@example.com" {
+		t.Fatal("today-expiry metric opened the wrong customer", row)
 	}
 	if plans["pro_5x"]["valid_accounts"] != float64(1) || plans["pro_20x"]["valid_accounts"] != float64(0) {
 		t.Fatal("incorrect Pro retention summary", plans)
@@ -71,7 +82,7 @@ func TestOperationsCustomerDashboardDeduplicatesLatestAccountAndFiltersExpiry(t 
 	if status != 200 || body["total"] != float64(1) {
 		t.Fatal("3-day expiry filter failed", status, body)
 	}
-	row := body["list"].([]any)[0].(map[string]any)
+	row = body["list"].([]any)[0].(map[string]any)
 	if row["email"] != "c@example.com" || row["expiry_estimated"] != true {
 		t.Fatal("wrong expiring customer", row)
 	}

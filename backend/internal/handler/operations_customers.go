@@ -32,7 +32,7 @@ type operationsCustomerPlanSummary struct {
 	Plan          string `json:"plan"`
 	ValidAccounts int64  `json:"valid_accounts"`
 	NewToday      int64  `json:"new_today"`
-	Expiring3Days int64  `json:"expiring_3d"`
+	ExpiringToday int64  `json:"expiring_today"`
 }
 
 type operationsCustomer struct {
@@ -186,7 +186,7 @@ func operationsCustomerFilters(req operationsCustomerSearch, now, todayStart, to
 	if req.ExpiryDays != 0 && req.ExpiryDays != 3 && req.ExpiryDays != 7 && req.ExpiryDays != 15 {
 		return "", nil, fmt.Errorf("到期范围只支持 3、7 或 15 天")
 	}
-	if req.Segment != "" && req.Segment != "active" && req.Segment != "new_today" && req.Segment != "expiring_3d" {
+	if req.Segment != "" && req.Segment != "active" && req.Segment != "new_today" && req.Segment != "expiring_today" {
 		return "", nil, fmt.Errorf("客户分组不正确")
 	}
 	q := strings.TrimSpace(req.Query)
@@ -202,14 +202,14 @@ func operationsCustomerFilters(req operationsCustomerSearch, now, todayStart, to
 	if req.Segment == "new_today" {
 		clauses = append(clauses, "activated_at>=? AND activated_at<?")
 		args = append(args, todayStart, tomorrowStart)
-	} else if req.Segment == "expiring_3d" {
-		clauses = append(clauses, "subscription_expires_at>? AND subscription_expires_at<=?")
-		args = append(args, now, now+3*86400)
+	} else if req.Segment == "expiring_today" {
+		clauses = append(clauses, "subscription_expires_at>=? AND subscription_expires_at<?")
+		args = append(args, todayStart, tomorrowStart)
 	}
 	if req.Segment == "new_today" {
 		// Today's upgrades can include an account whose subscription data has
 		// just crossed a boundary; the segment itself is the authoritative filter.
-	} else if req.Segment == "expiring_3d" {
+	} else if req.Segment == "expiring_today" {
 		// Already constrained above.
 	} else if req.ExpiryDays > 0 {
 		clauses = append(clauses, "subscription_expires_at>? AND subscription_expires_at<=?")
@@ -281,8 +281,8 @@ func OperationsCustomersSearch(c *gin.Context) {
 	rows, err := tx.Query(operationsCustomerCurrentCTE+`SELECT plan,
 		SUM(CASE WHEN subscription_expires_at>? THEN 1 ELSE 0 END),
 		SUM(CASE WHEN activated_at>=? AND activated_at<? THEN 1 ELSE 0 END),
-		SUM(CASE WHEN subscription_expires_at>? AND subscription_expires_at<=? THEN 1 ELSE 0 END)
-		FROM current_customers GROUP BY plan`, now, todayStart, tomorrowStart, now, now+3*86400)
+		SUM(CASE WHEN subscription_expires_at>=? AND subscription_expires_at<? THEN 1 ELSE 0 END)
+		FROM current_customers GROUP BY plan`, now, todayStart, tomorrowStart, todayStart, tomorrowStart)
 	if err != nil {
 		localError(c, 500, "读取客户统计失败")
 		return
@@ -296,7 +296,7 @@ func OperationsCustomersSearch(c *gin.Context) {
 			return
 		}
 		if item, ok := planMap[plan]; ok {
-			item.ValidAccounts, item.NewToday, item.Expiring3Days = valid, today, expiring
+			item.ValidAccounts, item.NewToday, item.ExpiringToday = valid, today, expiring
 		}
 	}
 	if err = rows.Err(); err != nil {
@@ -312,7 +312,7 @@ func OperationsCustomersSearch(c *gin.Context) {
 		plans = append(plans, item)
 		totals.ValidAccounts += item.ValidAccounts
 		totals.NewToday += item.NewToday
-		totals.Expiring3Days += item.Expiring3Days
+		totals.ExpiringToday += item.ExpiringToday
 	}
 
 	var completed, missingEmail, missingDates int64
