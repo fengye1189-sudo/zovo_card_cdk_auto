@@ -476,6 +476,67 @@ func TestAutomationUnknownTopupAcceptsUniqueDelayedLedgerEvidence(t *testing.T) 
 	}
 }
 
+func TestAutomationUnknownTopupWithoutChargeReleasesAfterDay(t *testing.T) {
+	a := newAutoFixture(t)
+	p := moneyPolicy()
+	putAutoPolicy(t, p)
+	now := time.Now()
+	a.balance = 5
+	if _, err := db.DB.Exec(`INSERT INTO automation_money
+		(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
+		VALUES('no-charge','topup',123,1578,1578,500,?,'unknown',?)`, financeScope(), now.Add(-25*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	dueAgain()
+	maintainAutomationCards(context.Background())
+	var state string
+	if err := db.DB.QueryRow("SELECT state FROM automation_money WHERE id='no-charge'").Scan(&state); err != nil || state != "no_charge_verified" || automationBlocked() {
+		t.Fatal("authoritative no-charge evidence did not release the lock", state, err)
+	}
+	var cardID, balance int64
+	if err := db.DB.QueryRow("SELECT card_id,balance_minor FROM automation_money_nocharge_evidence WHERE operation_id='no-charge'").Scan(&cardID, &balance); err != nil || cardID != 123 || balance != 500 {
+		t.Fatal("no-charge evidence missing", cardID, balance, err)
+	}
+	if a.money.Load() != 0 {
+		t.Fatal("reconciliation cycle submitted a new funding request")
+	}
+}
+
+func TestAutomationUnknownTopupNoChargeProofStaysConservative(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		age    time.Duration
+		adjust func(*autoFixture)
+	}{
+		{name: "too young", age: time.Hour, adjust: func(a *autoFixture) { a.balance = 5 }},
+		{name: "balance increased", age: 25 * time.Hour, adjust: func(a *autoFixture) { a.balance = 6 }},
+		{name: "ambiguous exact ledger row", age: 25 * time.Hour, adjust: func(a *autoFixture) {
+			a.balance = 5
+			a.topupAmount.Store(1578)
+			a.topupAt.Store(time.Now().Add(-25 * time.Hour).UnixNano())
+			a.rechargeStatus = "processing"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newAutoFixture(t)
+			p := moneyPolicy()
+			putAutoPolicy(t, p)
+			tc.adjust(a)
+			if _, err := db.DB.Exec(`INSERT INTO automation_money
+				(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
+				VALUES('still-uncertain','topup',123,1578,1578,500,?,'unknown',?)`, financeScope(), time.Now().Add(-tc.age).Unix()); err != nil {
+				t.Fatal(err)
+			}
+			dueAgain()
+			maintainAutomationCards(context.Background())
+			var state string
+			if err := db.DB.QueryRow("SELECT state FROM automation_money WHERE id='still-uncertain'").Scan(&state); err != nil || state != "unknown" || !automationBlocked() {
+				t.Fatal("ambiguous operation was released", state, err)
+			}
+		})
+	}
+}
+
 func TestAutomationTopupLedgerRejectsUntrustedEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

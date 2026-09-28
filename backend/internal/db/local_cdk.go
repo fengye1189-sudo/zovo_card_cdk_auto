@@ -254,6 +254,11 @@ func InitLocalCDK() error {
   upstream_id INTEGER NOT NULL, confirmed_at INTEGER NOT NULL,
   UNIQUE(scope,source,upstream_id)
  );
+ CREATE TABLE IF NOT EXISTS automation_money_nocharge_evidence (
+  operation_id TEXT PRIMARY KEY, scope TEXT NOT NULL, card_id INTEGER NOT NULL,
+  balance_minor INTEGER NOT NULL, checked_at INTEGER NOT NULL,
+  reason TEXT NOT NULL
+ );
  -- Last fully synchronized Zovo card inventory. Historical money operations
  -- remain immutable, while this snapshot tells the UI whether their card is
  -- still present in the current provider account.

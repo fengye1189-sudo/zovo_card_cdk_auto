@@ -88,7 +88,7 @@ async function save(){if(!ready.value||saving.value)return;const invalid=validat
 async function pause(){if(saving.value)return;saving.value=true;try{const d=await api('pause',{method:'POST'});Object.assign(settings,d.settings);version.value=d.version;serverSnapshot.value=JSON.stringify(settings);try{localStorage.removeItem(draftKey)}catch{};draftNotice.value='';ready.value=true;dialog.toast('已暂停新的操作；已发出的请求仍需核对','info');await loadStatus()}catch(e:any){error.value=e.message}finally{saving.value=false}}
 function date(v:number){return v>0?new Date(v*1000).toLocaleString():'尚未查询'}
 function renewal(v:string){return ({success:'续费已取消',pending:'取消待确认',warning:'需要复查',not_requested:'尚未请求'} as Record<string,string>)[v]||'未返回'}
-function moneyState(v:string){return ({inflight:'请求处理中',pending:'待核查余额',unknown:'结果不明，已锁定',balance_verified:'余额已核查'} as Record<string,string>)[v]||v}
+function moneyState(v:string){return ({inflight:'请求处理中',pending:'待核查余额',unknown:'结果不明，已锁定',balance_verified:'余额已核查',no_charge_verified:'已确认未扣款，锁定已解除'} as Record<string,string>)[v]||v}
 function inventoryLabel(row:any){if(row.inventory_state==='present')return `当前列表中${row.provider_status?' · '+row.provider_status:''}`;if(row.inventory_state==='missing')return '已不在当前 Zovo 卡片列表（历史记录）';return '尚无完整同步快照'}
 function inventoryColor(v:string){return v==='present'?'var(--good)':v==='missing'?'var(--warn)':'var(--el-text-color-secondary)'}
 function cyclePhase(row:any){if(row.retire_state==='closed')return '已结束';if(row.phase==='final')return '最后 2 次';if(row.cooldown_until)return '冷静期';return '普通阶段'}

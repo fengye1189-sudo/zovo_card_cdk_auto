@@ -251,6 +251,8 @@ func notificationStatusLabel(state string) string {
 		return "结果不明，已停止自动重试"
 	case "balance_verified":
 		return "余额已确认"
+	case "no_charge_verified":
+		return "已确认未扣款，资金锁已解除"
 	case "review":
 		return "待人工核对"
 	case "reserved":

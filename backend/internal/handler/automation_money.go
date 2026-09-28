@@ -594,6 +594,8 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 			target = op.result
 		}
 		matched := false
+		ledgerComplete := false
+		exactLedgerEntry := false
 		// A provider-accepted pending request may be confirmed by its expected
 		// post-recharge balance. An unknown request is stricter: a later unrelated
 		// top-up could also raise the balance, so require an exact ledger entry.
@@ -615,6 +617,10 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 			entries, _, ledgerErr := cardplatform.New(currentConfig).FinancePage(ctx, "recharge", op.card, 1)
 			cancel()
 			if ledgerErr == nil {
+				// Card recharge history is returned as one complete list (bounded and
+				// validated by the client), so an old operation can also be proven to
+				// have produced no ledger entry at all.
+				ledgerComplete = true
 				maxDelay := int64((15 * time.Minute).Seconds())
 				if op.state == "unknown" {
 					// Some provider timeouts finish asynchronously many hours later.
@@ -628,8 +634,11 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 					at, parseErr := time.Parse(time.RFC3339Nano, entry.At)
 					status := strings.ToLower(strings.TrimSpace(entry.Status))
 					if parseErr != nil || entry.ID <= 0 || entry.Amount == nil || *entry.Amount != op.amount ||
-						(status != "success" && status != "succeeded" && status != "completed") ||
 						at.Unix() < op.at-30 || at.Unix() > op.at+maxDelay {
+						continue
+					}
+					exactLedgerEntry = true
+					if status != "success" && status != "succeeded" && status != "completed" {
 						continue
 					}
 					matches = append(matches, entry)
@@ -661,6 +670,55 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 						matched = true
 						db.WriteAudit("automation", "money_ledger_verified", fmt.Sprintf("operation=%s source=card_recharge upstream=%d", op.id, entry.ID), "")
 					}
+				}
+			}
+		}
+		if !matched && op.state == "unknown" && op.action == "topup" && now-op.at >= int64((24*time.Hour)/time.Second) && ledgerComplete && !exactLedgerEntry {
+			// After a full day, two independent provider facts are sufficient to
+			// prove that a timed-out top-up did not charge: the complete card ledger
+			// has no operation-window entry and the live card balance never rose
+			// above its pre-request value. Record that negative evidence before
+			// releasing the safety lock. Ambiguous ledger rows remain locked.
+			var liveBalance int64
+			balanceConfirmed := false
+			for _, card := range inventory {
+				balance, ok := usdMinor(card.Balance)
+				if card.ID == op.card && card.Status == "ACTIVE" && ok && balance <= op.before {
+					liveBalance = balance
+					balanceConfirmed = true
+					break
+				}
+			}
+			if balanceConfirmed {
+				tx, txErr := db.DB.Begin()
+				if txErr == nil {
+					_, txErr = tx.Exec(`INSERT INTO automation_money_nocharge_evidence
+						(operation_id,scope,card_id,balance_minor,checked_at,reason)
+						VALUES(?,?,?,?,?,?)`, op.id, op.scope, op.card, liveBalance, now, "complete recharge ledger has no matching entry after 24h; live balance did not increase")
+					if txErr == nil {
+						var result sql.Result
+						result, txErr = tx.Exec("UPDATE automation_money SET state='no_charge_verified' WHERE id=? AND state='unknown'", op.id)
+						if txErr == nil {
+							changed, rowsErr := result.RowsAffected()
+							if rowsErr != nil || changed != 1 {
+								txErr = fmt.Errorf("money operation state changed")
+							}
+						}
+					}
+					if txErr == nil {
+						txErr = tx.Commit()
+					} else {
+						_ = tx.Rollback()
+					}
+				}
+				if txErr == nil {
+					db.WriteAudit("automation", "money_nocharge_verified", fmt.Sprintf("operation=%s card=%d balance=%d", op.id, op.card, liveBalance), "")
+					var remaining int
+					_ = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','pending','unknown')").Scan(&remaining)
+					if remaining == 0 {
+						autoResolve("money")
+					}
+					continue
 				}
 			}
 		}
