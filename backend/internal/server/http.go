@@ -218,6 +218,7 @@ func setupRoutes(r *gin.Engine) {
 		// Marketplace-only, HMAC-authenticated order binding. This endpoint never
 		// accepts a customer identity, plaintext CDK, credential, or browser cookie.
 		internal := api.Group("/internal")
+		internal.POST("/local-cdk/issue", handler.MarketplaceLocalCDKIssue)
 		internal.POST("/local-cdk/bind", handler.MarketplaceLocalCDKBind)
 		internal.POST("/managed-cdk/history", handler.MarketplaceManagedHistory)
 		// Marketplace-only issuer invoice lookup. The HMAC-authenticated caller

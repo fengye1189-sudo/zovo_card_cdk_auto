@@ -32,7 +32,7 @@
       </div>
       <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <label>搜索升级账号<input v-model.trim="filters.q" class="input mt-1" placeholder="升级使用的邮箱" autocomplete="off" @keyup.enter="search" /></label>
-        <label>升级类型<select v-model="filters.plan" class="input mt-1"><option value="">全部套餐</option><option value="plus">Plus</option><option value="go">Go</option><option value="pro_5x">Pro 5X</option><option value="pro_20x">Pro 20X</option></select></label>
+        <label>升级类型<select v-model="filters.plan" class="input mt-1"><option value="">全部套餐</option><option value="plus">Plus</option><option value="go">Go</option><option value="pro_5x">Pro 5X</option><option value="pro_5x_cl">Pro 5X 智利区</option><option value="pro_20x">Pro 20X</option></select></label>
         <label>客户状态<select v-model="filters.state" class="input mt-1"><option value="active">有效</option><option value="expired">已到期</option><option value="all">全部</option></select></label>
         <label>到期范围<select v-model.number="filters.expiry_days" class="input mt-1"><option :value="0">不限</option><option :value="3">3天内</option><option :value="7">7天内</option><option :value="15">15天内</option></select></label>
         <label>日期时区<select v-model="filters.timezone" class="input mt-1"><option value="Asia/Bangkok">曼谷时间（UTC+7）</option><option value="UTC">UTC</option></select></label>
@@ -121,7 +121,7 @@ type Customer = {
 
 const defaults = () => ({ q: '', plan: '', state: 'active', expiry_days: 0, timezone: 'Asia/Bangkok', segment: '' })
 const filters = reactive(defaults())
-const planCards = ref<PlanSummary[]>(['plus', 'go', 'pro_5x', 'pro_20x'].map((plan) => ({ plan, valid_accounts: 0, new_today: 0, expiring_today: 0 })))
+const planCards = ref<PlanSummary[]>(['plus', 'go', 'pro_5x', 'pro_5x_cl', 'pro_20x'].map((plan) => ({ plan, valid_accounts: 0, new_today: 0, expiring_today: 0 })))
 const totals = reactive({ valid_accounts: 0, new_today: 0, expiring_today: 0 })
 const dataQuality = reactive({ completed: 0, missing_email: 0, missing_dates: 0 })
 const rows = ref<Customer[]>([])
@@ -145,7 +145,7 @@ const detailTitle = computed(() => {
 })
 
 function planLabel(plan: string) {
-  return ({ plus: 'Plus', go: 'Go', pro_5x: 'Pro 5X', pro_20x: 'Pro 20X' } as Record<string, string>)[plan] || plan
+  return ({ plus: 'Plus', go: 'Go', pro_5x: 'Pro 5X', pro_5x_cl: 'Pro 5X 智利区', pro_20x: 'Pro 20X' } as Record<string, string>)[plan] || plan
 }
 
 function date(value: number) {

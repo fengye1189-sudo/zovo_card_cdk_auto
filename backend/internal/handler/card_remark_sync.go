@@ -113,6 +113,8 @@ func cardRemarkPlanLabel(plan string) string {
 		return "Go"
 	case "pro_5x":
 		return "Pro 5X"
+	case "pro_5x_cl":
+		return "Pro 5X CL"
 	case "pro_20x":
 		return "Pro 20X"
 	default:
@@ -126,7 +128,7 @@ func automaticCardRemark(summary *cardUsageSummary) string {
 	}
 	total := 0
 	parts := make([]string, 0, 4)
-	for _, plan := range []string{"plus", "go", "pro_5x", "pro_20x"} {
+	for _, plan := range localPlanKeys {
 		count := summary.Counts[plan]
 		if count <= 0 {
 			continue

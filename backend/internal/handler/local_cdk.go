@@ -212,7 +212,7 @@ func localFairShuffleCards(ids []int64) error {
 func localAvailableCards(c *gin.Context, cli *cardplatform.Client, s localSettings, plans ...string) ([]int64, error) {
 	plan := "plus"
 	if len(plans) > 0 {
-		plan = plans[0]
+		plan = upstreamLocalPlan(plans[0])
 	}
 	candidates, e := cli.DirectCandidatesForPlan(c.Request.Context(), plan)
 	if e != nil {
@@ -559,7 +559,9 @@ func LocalCDKPreflight(c *gin.Context) {
 		return
 	}
 	cli := cardplatform.NewFromSettings()
-	version, fee, e := cli.DirectPricing(c.Request.Context(), r.Plan)
+	upstreamPlan := upstreamLocalPlan(r.Plan)
+	country, currency := localPlanPaymentRegion(r.Plan)
+	version, fee, e := cli.DirectPricing(c.Request.Context(), upstreamPlan)
 	if e != nil {
 		localError(c, 502, "暂时无法获取充值报价，请联系商家检查通道")
 		return
@@ -568,7 +570,7 @@ func LocalCDKPreflight(c *gin.Context) {
 		localError(c, 503, "套餐未开放或服务费超出商家设置的限额")
 		return
 	}
-	raw, e := cli.DirectPreflight(c.Request.Context(), gin.H{"product": "gpt", "credential": req.Credential})
+	raw, e := cli.DirectPreflight(c.Request.Context(), gin.H{"product": "gpt", "credential": req.Credential, "payment_country": country, "payment_currency": currency})
 	if e != nil {
 		localError(c, 502, "账号预检失败，请检查账号信息或联系商家")
 		return
@@ -588,7 +590,7 @@ func LocalCDKPreflight(c *gin.Context) {
 		localError(c, 502, "账号或报价信息不完整，尚未提交充值")
 		return
 	}
-	quote := pf.Quotes[r.Plan]
+	quote := pf.Quotes[upstreamPlan]
 	if quote.Amount <= 0 || quote.Amount > s.MaxAmountMinor || strings.ToUpper(quote.Currency) != s.Currency {
 		localError(c, 409, "充值报价超出商家限额或币种不符，尚未扣款")
 		return
@@ -663,7 +665,9 @@ func LocalCDKRedeem(c *gin.Context) {
 		return
 	}
 	cli := cardplatform.NewFromSettings()
-	version, fee, e := cli.DirectPricing(c.Request.Context(), r.Plan)
+	upstreamPlan := upstreamLocalPlan(r.Plan)
+	country, currency := localPlanPaymentRegion(r.Plan)
+	version, fee, e := cli.DirectPricing(c.Request.Context(), upstreamPlan)
 	if e != nil || version != r.Version || fee > s.MaxFeeMinor {
 		localError(c, 409, "套餐或报价发生变化，请重新预检；尚未提交充值")
 		return
@@ -726,7 +730,7 @@ func LocalCDKRedeem(c *gin.Context) {
 		return
 	}
 	r.CardID = chosen
-	raw, e := cli.DirectOrder(c.Request.Context(), gin.H{"product": "gpt", "no_auto_card_switch": true, "card_id": r.CardID, "plan": r.Plan, "credential": req.Credential, "preflight_token": req.PF, "client_request_id": requestID, "pricing_version": r.Version}, requestID)
+	raw, e := cli.DirectOrder(c.Request.Context(), gin.H{"product": "gpt", "no_auto_card_switch": true, "card_id": r.CardID, "plan": upstreamPlan, "payment_country": country, "payment_currency": currency, "credential": req.Credential, "preflight_token": req.PF, "client_request_id": requestID, "pricing_version": r.Version}, requestID)
 	var order struct {
 		ID int64 `json:"id"`
 	}

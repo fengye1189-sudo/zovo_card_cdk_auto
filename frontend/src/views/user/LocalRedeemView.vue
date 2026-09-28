@@ -42,6 +42,7 @@
     <section v-else-if="step===3" class="card space-y-4">
       <h2 class="text-xl font-bold">确认兑换</h2>
       <p v-if="account.dedicated_card" class="alert alert-info">{{ localPlanLabel(account.plan) }} 将由系统自动处理，提交后可在本页查询结果。</p>
+      <p v-if="String(account.plan||'').startsWith('credit')" class="alert alert-info">Codex 点数属于订阅加购项，目标账号必须已有生效中的 Plus 或 Pro；本次充值不会改变当前订阅套餐。</p>
       <dl class="space-y-3"><div><dt class="text-muted">充值账号</dt><dd class="font-bold break-all">{{ account.email }}</dd></div><div><dt class="text-muted">兑换套餐</dt><dd>{{ localPlanLabel(account.plan) }}</dd></div><div><dt class="text-muted">当前套餐</dt><dd>{{ account.current_plan || '未返回' }}</dd></div></dl>
       <p class="text-sm text-muted">请核对账号。提交后将开始真实充值，处理中不要重复操作。</p>
       <label class="flex gap-2"><input v-model="confirmed" type="checkbox" />我确认账号无误，并同意提交兑换</label>
@@ -52,7 +53,7 @@
       <dl v-if="result.status==='completed'" class="space-y-3 rounded-xl border border-line p-4">
         <div><dt class="text-muted">升级类型</dt><dd class="font-bold">{{ result.upgrade_type || localPlanLabel(result.plan) }}</dd></div>
         <div><dt class="text-muted">开通日期</dt><dd>{{ formatResultDate(result.activated_at) }}</dd></div>
-        <div><dt class="text-muted">{{ result.expiry_estimated ? '预计到期日期' : '到期日期' }}</dt><dd>{{ formatResultDate(result.subscription_expires_at) }}</dd></div>
+        <div v-if="Number(result.subscription_expires_at)>0"><dt class="text-muted">{{ result.expiry_estimated ? '预计到期日期' : '到期日期' }}</dt><dd>{{ formatResultDate(result.subscription_expires_at) }}</dd></div>
       </dl>
       <a v-if="['failed','review'].includes(result.status)" class="btn-primary w-full inline-flex justify-center" :href="result.support_url || supportUrl" target="_blank" rel="noopener noreferrer">💬 联系客服处理</a>
       <button class="btn-secondary" :disabled="busy" @click="query">{{ busy?'正在刷新…':'立即刷新' }}</button><button class="app-link ml-4" :disabled="busy" @click="reset">查询其他卡密</button>

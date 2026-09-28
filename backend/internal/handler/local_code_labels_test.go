@@ -9,7 +9,7 @@ import (
 )
 
 func TestIssuedCodeLabelsAndStoredPrefixes(t *testing.T) {
-	for _, plan := range []string{"plus", "go", "pro_5x", "pro_20x"} {
+	for _, plan := range localPlanKeys {
 		t.Run(plan, func(t *testing.T) {
 			f := newLocalFixture(t)
 			status, d := f.call("/issue", gin.H{"product_id": plan, "count": 1, "days": 30, "request_id": "label-batch-012345678901"})
@@ -17,7 +17,7 @@ func TestIssuedCodeLabelsAndStoredPrefixes(t *testing.T) {
 				t.Fatal(status, d)
 			}
 			code := d["codes"].([]any)[0].(string)
-			head := map[string]string{"plus": "PULS-", "go": "GO-", "pro_5x": "PRO5X-", "pro_20x": "PRO-"}[plan]
+			head := localCodeLabel(plan)
 			suffix := strings.TrimPrefix(code, head)
 			if !strings.HasPrefix(code, head) || len(suffix) != 15 || strings.Trim(suffix, "ABCDEFGHIJKLMNOPQRSTUVWXYZ") != "" {
 				t.Fatal("expected product label and fifteen uppercase letters")

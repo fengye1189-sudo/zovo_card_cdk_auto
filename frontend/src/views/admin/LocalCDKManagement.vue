@@ -12,7 +12,7 @@
         <label>数量<input v-model.number="count" type="number" min="1" max="100" class="input mt-2" /></label>
         <label>有效期<input value="固定 90 天" readonly class="input mt-2" /></label>
       </div>
-      <p class="text-sm text-muted">新卡密为产品前缀（PULS- / GO- / PRO5X- / PRO-）加 15 位随机大写字母。完整卡密只显示一次，请下载保存。数据库仅保存校验摘要，无法找回原码；旧卡密仍可使用。</p>
+      <p class="text-sm text-muted">生成通常即时完成且不调用 Zovo、不扣款。卡密会绑定当前所选商品；Codex 必须按 250 / 500 / 1000 / 2500 / 5000 / 25000 点分别生成，兑换时不能临时改额度。完整卡密只显示一次，请下载保存；数据库仅保存校验摘要，无法找回原码。</p>
       <button class="btn-primary" :disabled="busy || codes.length > 0" @click="issue">{{ busy ? '处理中…' : '免费生成本站卡密' }}</button>
       <button v-if="!codes.length" class="app-link ml-3" :disabled="busy" @click="newBatch">更换批次编号</button>
       <div v-if="codes.length" class="space-y-3">
@@ -133,7 +133,7 @@ async function load(){settingsReady.value=false;await run(async()=>{const [a,b,p
  try{const raw=localStorage.getItem(draftKey);if(raw){const draft=JSON.parse(raw);if(draft&&typeof draft==='object'){if(Array.isArray(draft.selected_ids))selectedIDs.value=draft.selected_ids.filter((id:any)=>Number.isInteger(id)&&id>0).slice(0,20);if(draft.settings&&typeof draft.settings==='object')Object.assign(settings,draft.settings);draftConflict.value=draft.source_revision!==b.revision;sourceRevision.value=draft.source_revision||'';draftNotice.value='已恢复上次未保存的白名单草稿。核对后请点击“保存当前设置”。'}}}catch{}
  if(Number(settings.max_successful_payments_per_card)<=0)settings.max_successful_payments_per_card=3;if(settingsSnapshot()===savedSnapshot){draftNotice.value='';draftConflict.value=false;sourceRevision.value=b.revision;try{localStorage.removeItem(draftKey)}catch{}};settingsReady.value=true});if(settingsReady.value)await loadCards(cardPage.value)}
 async function issue(){await run(async()=>{sessionStorage.setItem('maple-pending-batch',batch);const d=await api('local-cdks',{method:'POST',body:JSON.stringify({count:count.value,days:days.value,request_id:batch,product_id:productID.value})});codes.value=d.codes;sessionStorage.removeItem('maple-pending-batch');batch=crypto.randomUUID();rows.value=(await api('operations/records?page_size=25')).list})}
-function download(){const blob=new Blob([codes.value.join('\r\n')],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='maple-plus-cdks-'+Date.now()+'.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+function download(){const product=products.value.find(p=>p.id===productID.value);const plan=String(product?.plan||'product').replace(/[^a-z0-9_-]+/gi,'-');const blob=new Blob([codes.value.join('\r\n')],{type:'text/plain;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`maple-${plan}-cdks-${Date.now()}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 async function clearCodes(){if(await dialog.confirm('确认已保存全部卡密？清空后无法从本站恢复原码。'))codes.value=[]}
 async function newBatch(){if(await dialog.confirm('如果上次生成结果不明，请先在列表中核对并禁用丢失的卡密。确认开始新批次？')){batch=crypto.randomUUID();sessionStorage.removeItem('maple-pending-batch');error.value=''}}
 function showChannelError(message:string){error.value=message;requestAnimationFrame(()=>document.querySelector('[data-channel-save-error]')?.scrollIntoView({behavior:'smooth',block:'center'}))}

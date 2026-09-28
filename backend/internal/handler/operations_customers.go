@@ -275,7 +275,7 @@ func OperationsCustomersSearch(c *gin.Context) {
 	defer tx.Rollback()
 
 	planMap := map[string]*operationsCustomerPlanSummary{}
-	for _, plan := range []string{"plus", "go", "pro_5x", "pro_20x"} {
+	for _, plan := range []string{"plus", "go", "pro_5x", "pro_5x_cl", "pro_20x"} {
 		planMap[plan] = &operationsCustomerPlanSummary{Plan: plan}
 	}
 	rows, err := tx.Query(operationsCustomerCurrentCTE+`SELECT plan,
@@ -305,9 +305,9 @@ func OperationsCustomersSearch(c *gin.Context) {
 		return
 	}
 	rows.Close()
-	plans := make([]operationsCustomerPlanSummary, 0, 4)
+	plans := make([]operationsCustomerPlanSummary, 0, 5)
 	totals := operationsCustomerPlanSummary{Plan: "all"}
-	for _, plan := range []string{"plus", "go", "pro_5x", "pro_20x"} {
+	for _, plan := range []string{"plus", "go", "pro_5x", "pro_5x_cl", "pro_20x"} {
 		item := *planMap[plan]
 		plans = append(plans, item)
 		totals.ValidAccounts += item.ValidAccounts
@@ -320,7 +320,7 @@ func OperationsCustomersSearch(c *gin.Context) {
 		COALESCE(SUM(CASE WHEN TRIM(email)='' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN activated_at<=0 OR subscription_expires_at<=0 THEN 1 ELSE 0 END),0)
 		FROM (
-			SELECT email,activated_at,subscription_expires_at FROM local_cdks WHERE status='consumed'
+			SELECT email,activated_at,subscription_expires_at FROM local_cdks WHERE status='consumed' AND plan NOT LIKE 'credit%'
 			UNION ALL
 			SELECT account_email,activated_at,subscription_expires_at FROM managed_activation_attempts
 			WHERE LOWER(TRIM(status))='completed'

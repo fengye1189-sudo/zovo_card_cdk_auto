@@ -23,7 +23,9 @@ func (c *Client) DirectCandidates(ctx context.Context) ([]DirectCandidate, error
 	return c.DirectCandidatesForPlan(ctx, "plus")
 }
 func (c *Client) DirectCandidatesForPlan(ctx context.Context, plan string) ([]DirectCandidate, error) {
-	if plan != "plus" && plan != "go" && plan != "pro_5x" && plan != "pro_20x" {
+	if plan != "plus" && plan != "go" && plan != "pro_5x" && plan != "pro_20x" &&
+		plan != "credit250" && plan != "credit500" && plan != "credit1000" &&
+		plan != "credit2500" && plan != "credit5000" && plan != "credit25000" {
 		return nil, fmt.Errorf("unsupported plan")
 	}
 	raw, err := c.doOpenAPI(ctx, http.MethodGet, "/gpt-direct/card-pool/schedule?product=gpt&plan="+plan+"&card_mode=auto_existing", nil, "")

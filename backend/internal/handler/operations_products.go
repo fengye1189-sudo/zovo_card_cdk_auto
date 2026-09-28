@@ -93,7 +93,7 @@ func OperationsProductsList(c *gin.Context) {
 		localError(c, 500, "商品读取失败")
 		return
 	}
-	c.JSON(200, gin.H{"list": list, "supported_plans": []string{"plus", "go", "pro_5x", "pro_20x"}, "price_note": "参考售价仅用于商品记录，不会修改充值报价或资金限额"})
+	c.JSON(200, gin.H{"list": list, "supported_plans": localPlanKeys, "price_note": "参考售价仅用于商品记录，不会修改充值报价或资金限额"})
 }
 
 var operationsProductID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,47}$`)
@@ -112,7 +112,7 @@ func OperationsProductsSave(c *gin.Context) {
 		p.ID = c.Param("id")
 	}
 	if !operationsProductID.MatchString(p.ID) || p.Name == "" || len([]rune(p.Name)) > 80 || len([]rune(p.Description)) > 1000 || !supportedLocalPlan(p.Plan) || p.DefaultDays < 1 || p.DefaultDays > 365 || p.ReferencePriceMinor < 0 || p.ReferencePriceMinor > 100000000 || !regexp.MustCompile(`^[A-Z]{3}$`).MatchString(p.Currency) {
-		localError(c, 400, "请检查商品编号、名称、有效期、币种和参考售价；当前支持 Plus、Go、Pro 5X、Pro 20X")
+		localError(c, 400, "请检查商品编号、名称、有效期、币种和参考售价；当前支持订阅套餐、智利 Pro 5X 与 Codex 点数")
 		return
 	}
 	p.UpdatedAt = time.Now().Unix()

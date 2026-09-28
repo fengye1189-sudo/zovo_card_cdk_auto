@@ -114,7 +114,7 @@ func TestPro5xMigrationPreservesExistingCatalog(t *testing.T) {
 		}
 	}
 	var count int
-	if err := db.DB.QueryRow("SELECT COUNT(*) FROM operations_products").Scan(&count); err != nil || count != 4 {
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM operations_products").Scan(&count); err != nil || count != 11 {
 		t.Fatal("migration changed catalog count", count, err)
 	}
 	var name, plan, currency string
@@ -124,5 +124,25 @@ func TestPro5xMigrationPreservesExistingCatalog(t *testing.T) {
 	}
 	if err := db.DB.QueryRow("SELECT name,plan,currency FROM operations_products WHERE id='pro_5x'").Scan(&name, &plan, &currency); err != nil || name != "GPTPRO5x卡冲升级" || plan != "pro_5x" || currency != "PHP" {
 		t.Fatal("Pro 5X product not added", name, plan, currency, err)
+	}
+}
+
+func TestRegionalAndCodexPlans(t *testing.T) {
+	for _, test := range []struct {
+		plan, upstream, country, currency, prefix string
+		cap                                      int64
+	}{
+		{"pro_5x_cl", "pro_5x", "CL", "CLP", "PRO5CL-", 150000},
+		{"credit250", "credit250", "PH", "PHP", "CODEX250-", 65000},
+		{"credit25000", "credit25000", "PH", "PHP", "CODEX25000-", 6200000},
+	} {
+		if !supportedLocalPlan(test.plan) || upstreamLocalPlan(test.plan) != test.upstream || localCodeLabel(test.plan) != test.prefix {
+			t.Fatalf("plan mapping incorrect for %s", test.plan)
+		}
+		country, currency := localPlanPaymentRegion(test.plan)
+		settings := settingsForLocalPlan(localSettings{Enabled: true, MaxFeeMinor: 80}, test.plan)
+		if country != test.country || currency != test.currency || settings.Currency != test.currency || settings.MaxAmountMinor != test.cap || settings.MaxFeeMinor != 50 {
+			t.Fatalf("region or cap incorrect for %s: %s %s %+v", test.plan, country, currency, settings)
+		}
 	}
 }

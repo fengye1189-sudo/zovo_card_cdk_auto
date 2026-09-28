@@ -528,6 +528,8 @@ const alreadySatisfiedHint = computed(() => {
 
 function planLabel(value: string) {
   const n = String(value || 'free').toLowerCase()
+  if (n.startsWith('credit')) return `Codex 点数 ${n.replace('credit','')}`
+  if (n === 'pro_5x_cl') return 'Pro 5x（智利区）'
   if (n.includes('prolite') || n.includes('5x') || n === 'pro_5x') return 'Pro 5x'
   if (n.includes('20x') || n === 'pro_20x' || n === 'pro' || n === 'chatgptpro' || n.includes('pro')) return 'Pro 20x'
   if (n.includes('plus')) return 'Plus'
@@ -539,6 +541,7 @@ function planLabel(value: string) {
 function planSatisfied(currentPlan: string, requestedPlan: string) {
   const current = String(currentPlan || '').toLowerCase()
   const req = String(requestedPlan || '').toLowerCase()
+  if (req.startsWith('credit')) return false
   const currentRank =
     current.includes('prolite') || current.includes('5x') || current === 'pro_5x'
       ? 2
