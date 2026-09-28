@@ -173,4 +173,10 @@ func TestOperationsCustomersIncludesManagedJZCompletionAndLatestRenewal(t *testi
 	if reminderOrder != orderID || reminderEmail != "jz-member@example.com" || dueAt != expires.Unix() {
 		t.Fatalf("managed renewal reminder lost buyer binding: order=%q email=%q due=%d", reminderOrder, reminderEmail, dueAt)
 	}
+	if early, err := dueCustomerExpiryNotifications(expires.Add(-24*time.Hour).Unix(), 10); err != nil || len(early) != 0 {
+		t.Fatalf("renewal reminder was sent before the expiry day: items=%v err=%v", early, err)
+	}
+	if due, err := dueCustomerExpiryNotifications(expires.Unix(), 10); err != nil || len(due) != 1 {
+		t.Fatalf("renewal reminder was not due at expiry: items=%v err=%v", due, err)
+	}
 }
