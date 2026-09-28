@@ -613,15 +613,15 @@ func TestReconcileCreatedCardEnrollmentHealsOrdinaryAndCompletedPro5x(t *testing
 	}
 }
 
-func TestAutomationOpenThresholdKeepsOneUsableCard(t *testing.T) {
+func TestAutomationOpenThresholdKeepsTwoUsableCards(t *testing.T) {
 	for _, tc := range []struct {
 		ready, active int
 		want          bool
 	}{
-		{0, 0, true}, {1, 1, false}, {2, 2, false},
-		{3, 3, false}, {2, 14, false}, {0, 14, false},
+		{0, 0, true}, {1, 1, true}, {2, 2, false},
+		{3, 3, false}, {2, 14, false}, {0, 14, true}, {1, 14, true},
 	} {
-		if got := shouldOpenAutomationCard(tc.ready, tc.active); got != tc.want {
+		if got := shouldOpenAutomationCard(tc.ready); got != tc.want {
 			t.Fatalf("ready=%d active=%d: got %t want %t", tc.ready, tc.active, got, tc.want)
 		}
 	}

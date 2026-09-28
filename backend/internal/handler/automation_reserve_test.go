@@ -11,7 +11,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-func TestAutomationKeepsOneUsableCard(t *testing.T) {
+func TestAutomationKeepsTwoUsableCards(t *testing.T) {
 	for _, mode := range []string{"zero", "one", "two", "duplicate", "cooldown", "unselected", "insufficient", "disabled", "missing_product"} {
 		t.Run(mode, func(t *testing.T) {
 			a := newAutoFixture(t)
@@ -58,7 +58,7 @@ func TestAutomationKeepsOneUsableCard(t *testing.T) {
 			putAutoPolicy(t, p)
 			maintainAutomationCards(context.Background())
 			want := int32(0)
-			if mode == "zero" {
+			if mode == "zero" || mode == "one" || mode == "unselected" || mode == "insufficient" {
 				want = 1
 			}
 			// The upstream client rejects duplicate candidate IDs rather than guessing.
@@ -93,7 +93,7 @@ func TestAutomationKeepsOneUsableCard(t *testing.T) {
 	}
 }
 
-func TestAutomationStopsOpeningAfterOneUsableCard(t *testing.T) {
+func TestAutomationStopsOpeningAfterTwoUsableCards(t *testing.T) {
 	a := newAutoFixture(t)
 	a.balance = 25
 	a.empty = true
@@ -115,11 +115,11 @@ func TestAutomationStopsOpeningAfterOneUsableCard(t *testing.T) {
 	dueAgain()
 	maintainAutomationCards(context.Background())
 	if a.money.Load() != 1 {
-		t.Fatal("another card was opened despite a healthy working card")
+		t.Fatal("another card was opened after two healthy working cards were available")
 	}
 	dueAgain()
 	maintainAutomationCards(context.Background())
 	if a.money.Load() != 1 {
-		t.Fatal("opening repeated despite a healthy working card")
+		t.Fatal("opening repeated after two healthy working cards were available")
 	}
 }
