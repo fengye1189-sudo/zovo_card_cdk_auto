@@ -23,7 +23,7 @@ func TestManagedActivationRunsInsideUnifiedRedemptionAndSubmitsOnce(t *testing.T
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/api/v1/cdk/preview" {
 			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"CDK不存在"}`))
+			_, _ = w.Write([]byte(`{"code":400,"msg":"CDK 无效或不可用"}`))
 			return
 		}
 		http.NotFound(w, r)
@@ -110,6 +110,7 @@ func TestManagedFallbackOnlyForUnknownPrimaryCode(t *testing.T) {
 	}{
 		{"not found", http.StatusNotFound, `{}`, true},
 		{"explicit missing", http.StatusBadRequest, `{"error":"CDK不存在"}`, true},
+		{"primary invalid or unavailable", http.StatusBadRequest, `{"code":400,"msg":"CDK 无效或不可用"}`, true},
 		{"used primary code", http.StatusBadRequest, `{"error":"CDK已被使用"}`, false},
 		{"disabled primary code", http.StatusBadRequest, `{"error":"CDK已禁用"}`, false},
 		{"primary outage", http.StatusBadGateway, `{"error":"upstream unavailable"}`, false},

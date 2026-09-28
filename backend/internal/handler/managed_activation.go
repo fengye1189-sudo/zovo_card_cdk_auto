@@ -60,6 +60,7 @@ func primaryAllowsManagedFallback(status int, raw []byte) bool {
 		extractJSONNestedString(raw, "data", "error"),
 	)))
 	return strings.Contains(message, "不存在") ||
+		strings.Contains(message, "cdk 无效或不可用") ||
 		strings.Contains(message, "not found") ||
 		strings.Contains(message, "invalid cdk") ||
 		strings.Contains(message, "invalid code")
