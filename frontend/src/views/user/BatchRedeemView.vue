@@ -384,6 +384,7 @@ interface BatchItem {
   verifyMsg: string
   redemptionToken: string
   attemptToken: string
+  managedFlow: boolean
   progressMsg: string
   email: string
   cardLastFour: string
@@ -429,7 +430,7 @@ const mailboxFileRef = ref<HTMLInputElement | null>(null)
 const lastFilledItemId = ref<string | null>(null)
 
 const pollTargets = ref<
-  Record<string, { token: string; attemptToken: string; code: string; terminal: boolean; missingPolls: number }>
+  Record<string, { token: string; attemptToken: string; code: string; managedFlow: boolean; terminal: boolean; missingPolls: number }>
 >({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let pollInFlight = false
@@ -554,13 +555,18 @@ async function pollBatch() {
     await Promise.all(
       entries.map(async ([id, target]) => {
         try {
-          let { r, data } = await api('/api/v1/public/cdk/result', {
-            method: 'POST',
-            body: JSON.stringify({
-              redemption_token: target.token,
-              attempt_token: target.attemptToken,
-            }),
-          })
+          let { r, data } = target.managedFlow
+            ? await api('/api/v1/public/cdk/result-by-code', {
+                method: 'POST',
+                body: JSON.stringify({ code: target.code }),
+              })
+            : await api('/api/v1/public/cdk/result', {
+                method: 'POST',
+                body: JSON.stringify({
+                  redemption_token: target.token,
+                  attempt_token: target.attemptToken,
+                }),
+              })
           if ((r.status === 404 || r.status === 409) && target.code) {
             ;({ r, data } = await api('/api/v1/public/cdk/result-by-code', {
               method: 'POST',
@@ -634,10 +640,10 @@ async function pollBatch() {
   }
 }
 
-function startPoll(id: string, token: string, code: string, attemptToken: string) {
+function startPoll(id: string, token: string, code: string, attemptToken: string, managedFlow = false) {
   pollTargets.value = {
     ...pollTargets.value,
-    [id]: { token, attemptToken, code, terminal: false, missingPolls: 0 },
+    [id]: { token, attemptToken, code, managedFlow, terminal: false, missingPolls: 0 },
   }
   if (!pollTimer) {
     void pollBatch()
@@ -784,6 +790,7 @@ async function handleVerifyBatch() {
     verifyMsg: '验证中…',
     redemptionToken: '',
     attemptToken: '',
+    managedFlow: false,
     progressMsg: '',
     email: '',
     cardLastFour: '',
@@ -832,6 +839,7 @@ async function handleVerifyBatch() {
           planLabel: planLabelOf(body),
           redemptionToken: token,
           attemptToken,
+          managedFlow: String(body?.flow || data?.flow || '') === 'managed_activation',
         }
       } catch {
         return {
@@ -877,6 +885,15 @@ async function submitOne(
       error: '',
     })
     return runPreflightRedeem(item, { mode: 'session', session }, check.email || imported?.email || '')
+  }
+
+  if (item.managedFlow) {
+    updateItem(item.id, {
+      status: 'failed',
+      progressMsg: '这张卡密需要使用完整 Session JSON，不能使用邮箱密码。',
+      error: '请切换 Session 方式后重新提交',
+    })
+    return 'fail'
   }
 
   const email = credential.email.trim()
@@ -964,14 +981,19 @@ async function runPreflightRedeem(
 
     const client_request_id = `batch-${deviceId.slice(0, 8)}-${Date.now()}-${item.id}`
     redeemStarted = true
+    const redeemPayload: Record<string, any> = {
+      redemption_token: redemptionToken,
+      attempt_token: attemptToken,
+      preflight_token: preflightToken,
+      client_request_id,
+    }
+    if (item.managedFlow) {
+      redeemPayload.code = item.cardKey
+      redeemPayload.credential = credential
+    }
     const redeem = await api('/api/v1/public/cdk/redeem', {
       method: 'POST',
-      body: JSON.stringify({
-        redemption_token: redemptionToken,
-        attempt_token: attemptToken,
-        preflight_token: preflightToken,
-        client_request_id,
-      }),
+      body: JSON.stringify(redeemPayload),
     })
     const order =
       redeem.data?.order || redeem.data?.data?.order || redeem.data?.data || redeem.data || {}
@@ -993,7 +1015,7 @@ async function runPreflightRedeem(
           progressMsg: pendingMessage,
           error: '',
         })
-        startPoll(item.id, redemptionToken, item.cardKey, attemptToken)
+        startPoll(item.id, redemptionToken, item.cardKey, attemptToken, item.managedFlow)
         return 'ok'
       }
       updateItem(item.id, {
@@ -1031,7 +1053,7 @@ async function runPreflightRedeem(
         progressMsg: message || '处理中…',
         error: '',
       })
-      startPoll(item.id, redemptionToken, item.cardKey, attemptToken)
+      startPoll(item.id, redemptionToken, item.cardKey, attemptToken, item.managedFlow)
     }
     return 'ok'
   } catch {
@@ -1041,7 +1063,7 @@ async function runPreflightRedeem(
         progressMsg: '网络连接中断，正在查询本次提交结果；请勿重复提交。',
         error: '',
       })
-      startPoll(item.id, redemptionToken, item.cardKey, attemptToken)
+      startPoll(item.id, redemptionToken, item.cardKey, attemptToken, item.managedFlow)
       return 'ok'
     }
     updateItem(item.id, {

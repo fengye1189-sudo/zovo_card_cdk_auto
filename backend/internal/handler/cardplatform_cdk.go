@@ -1256,6 +1256,12 @@ func PublicCDKPreview(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
+	// A definitive primary "not found/invalid" may belong to the managed
+	// activation channel. Provider outages and unknown 5xx outcomes never
+	// trigger this fallback, so a valid primary code cannot be double-routed.
+	if primaryAllowsManagedFallback(st, raw) && tryManagedPreview(c, code) {
+		return
+	}
 	// 成功时记下 code ↔ redemption_token，供后续绑定 session / 账单查卡密
 	if st >= 200 && st < 300 {
 		tok := extractJSONString(raw, "redemption_token", "token")
@@ -1302,6 +1308,9 @@ func PublicCDKPreflight(c *gin.Context) {
 	privateNoStore(c)
 	var body map[string]any
 	if !localBody(c, &body) {
+		return
+	}
+	if tryManagedPreflight(c, body) {
 		return
 	}
 	tok := strings.TrimSpace(str(body["redemption_token"]))
@@ -1398,6 +1407,9 @@ func PublicCDKRedeem(c *gin.Context) {
 	c.Header("X-Maple-Submit-State", "not-submitted")
 	var body map[string]any
 	if !localBody(c, &body) {
+		return
+	}
+	if tryManagedRedeem(c, body) {
 		return
 	}
 	// This is the first actual submit action. The atomic DB update only fills
@@ -1603,6 +1615,9 @@ func PublicCDKResultByCode(c *gin.Context) {
 		return
 	}
 	bind, err := db.GetPublicCDKBindingByCode(code, time.Now())
+	if (bind == nil || errors.Is(err, db.ErrCDKQueryNotStarted)) && tryManagedResultByCode(c, code) {
+		return
+	}
 	if publicCDKBindingError(c, err) {
 		return
 	}

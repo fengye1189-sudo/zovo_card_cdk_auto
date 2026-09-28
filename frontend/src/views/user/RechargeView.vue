@@ -58,7 +58,7 @@
         <h2 class="text-xl font-bold text-ink">ChatGPT 凭证</h2>
         <div class="flex gap-2">
           <button type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'session' }" @click="credMode = 'session'">Session</button>
-          <button type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'mailbox' }" @click="credMode = 'mailbox'">邮箱</button>
+          <button v-if="!managedFlow" type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'mailbox' }" @click="credMode = 'mailbox'">邮箱</button>
         </div>
         <template v-if="credMode === 'session'">
         <div style="margin-bottom: 12px; background: #fff7ed; border: 1px solid #ffedd5; border-radius: 8px; padding: 12px; font-size: 13px; color: #9a3412;">
@@ -283,6 +283,7 @@ const previewInfo = ref<any>(null)
 const redemptionToken = ref('')
 const attemptToken = ref('')
 const preflightToken = ref('')
+const managedFlow = ref(false)
 const credMode = ref<'session' | 'mailbox'>('session')
 const sessionRaw = ref('')
 const email = ref('')
@@ -335,6 +336,7 @@ function saveProgress() {
       redemptionToken: redemptionToken.value,
       attemptToken: attemptToken.value,
       preflightToken: preflightToken.value,
+      managedFlow: managedFlow.value,
       previewInfo: previewInfo.value,
       account: account.value,
       resultStatus: resultStatus.value,
@@ -371,6 +373,7 @@ function loadProgress(): boolean {
     if (p.redemptionToken) redemptionToken.value = String(p.redemptionToken)
     if (p.attemptToken) attemptToken.value = String(p.attemptToken)
     if (p.preflightToken) preflightToken.value = String(p.preflightToken)
+    managedFlow.value = p.managedFlow === true
     if (p.previewInfo) previewInfo.value = p.previewInfo
     if (p.account && typeof p.account === 'object') {
       account.value = {
@@ -401,8 +404,16 @@ function loadProgress(): boolean {
       return true
     }
     // 预检完成：恢复确认页（含订阅摘要）
-    if (preflightToken.value && s === 3) {
+    if (preflightToken.value && s === 3 && !managedFlow.value) {
       step.value = 3
+      return true
+    }
+    // The managed channel never persists Session in the browser. After a
+    // reload, return to credential entry instead of offering a submit button
+    // that no longer has the one-time credential in memory.
+    if (managedFlow.value && s === 3) {
+      preflightToken.value = ''
+      step.value = 2
       return true
     }
     if (s >= 1 && s <= 4) {
@@ -424,7 +435,7 @@ function clearProgress() {
 }
 
 watch(
-  [step, code, redemptionToken, attemptToken, preflightToken, previewInfo, account, resultStatus, resultStage, resultMessage, resultBody, timeline],
+  [step, code, redemptionToken, attemptToken, preflightToken, managedFlow, previewInfo, account, resultStatus, resultStage, resultMessage, resultBody, timeline],
   () => saveProgress(),
   { deep: true },
 )
@@ -782,6 +793,7 @@ async function tryResumeByCode(cdk: string): Promise<boolean> {
     body: JSON.stringify({ code: cdk }),
   })
   if (!r.ok) return false
+  managedFlow.value = data?.flow === 'managed_activation'
   applyResultPayload(data)
   if (!resultStatus.value) resultStatus.value = data?.status || data?.order?.status || 'pending'
   step.value = 4
@@ -833,6 +845,8 @@ async function doPreview() {
     redemptionToken.value = data.redemption_token || data.data?.redemption_token || data.token || ''
     attemptToken.value = data.attempt_token || ''
     previewInfo.value = data.data || data
+    managedFlow.value = String(previewInfo.value?.flow || data?.flow || '') === 'managed_activation'
+    if (managedFlow.value) credMode.value = 'session'
     if (!redemptionToken.value || !attemptToken.value) {
       // 有的实现把 token 放在顶层其它字段
       error.value = '未返回 redemption_token，请检查卡台 Base 配置'
@@ -899,14 +913,25 @@ async function doRedeem() {
   busy.value = true
   try {
     const client_request_id = 'web-' + deviceId.slice(0, 8) + '-' + Date.now()
+    const payload: Record<string, any> = {
+      redemption_token: redemptionToken.value,
+      attempt_token: attemptToken.value,
+      preflight_token: preflightToken.value,
+      client_request_id,
+    }
+    if (managedFlow.value) {
+      const session = extractSession(sessionRaw.value)
+      if (!session) {
+        error.value = 'Session 已清除或不完整，请返回上一步重新粘贴完整 JSON。'
+        step.value = 2
+        return
+      }
+      payload.code = code.value.trim()
+      payload.credential = { mode: 'session', session }
+    }
     const { r, data } = await api('/api/v1/public/cdk/redeem', {
       method: 'POST',
-      body: JSON.stringify({
-        redemption_token: redemptionToken.value,
-        attempt_token: attemptToken.value,
-        preflight_token: preflightToken.value,
-        client_request_id,
-      }),
+      body: JSON.stringify(payload),
     })
     applyResultPayload(data)
     if (!r.ok && r.status !== 202) {
@@ -936,6 +961,8 @@ async function doRedeem() {
     startPoll()
   } finally {
     preflightToken.value = ''
+    sessionRaw.value = ''
+    password.value = ''
     busy.value = false
   }
 }
@@ -952,7 +979,7 @@ function startPoll() {
     try {
       let r: Response
       let data: any
-      if (redemptionToken.value && attemptToken.value) {
+      if (!managedFlow.value && redemptionToken.value && attemptToken.value) {
         ;({ r, data } = await api('/api/v1/public/cdk/result', {
           method: 'POST',
           body: JSON.stringify({
@@ -976,6 +1003,7 @@ function startPoll() {
         }))
       }
       if (r.ok) {
+        if (data?.flow === 'managed_activation') managedFlow.value = true
         missingPolls = 0
         error.value = ''
         applyResultPayload(data)
@@ -1049,6 +1077,10 @@ function resetAll() {
   redemptionToken.value = ''
   attemptToken.value = ''
   preflightToken.value = ''
+  managedFlow.value = false
+  sessionRaw.value = ''
+  email.value = ''
+  password.value = ''
   clearAccount()
   resultBody.value = null
   resultStatus.value = ''

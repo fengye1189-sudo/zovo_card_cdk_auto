@@ -36,6 +36,9 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := db.InitLocalCDK(); err != nil {
 		return nil, err
 	}
+	if err := db.InitManagedActivation(); err != nil {
+		return nil, err
+	}
 	if err := auth.InitAdminAccess(); err != nil {
 		return nil, err
 	}

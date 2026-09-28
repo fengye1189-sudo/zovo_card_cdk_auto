@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/jzactivation"
 )
 
 // 公开批量查询上限：每条可能回源卡台 Result，避免一次打爆上游。
@@ -515,8 +516,92 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 			return publicQueryExpiredResult(code)
 		}
 	}
+	// Only ask the managed activation service when this code is unknown to the
+	// primary/local channels. A current primary binding or inventory record is
+	// authoritative, so an accidental code collision can never change routes.
+	if resp.Status == "unknown" && !activeBinding {
+		if managed, ok := lookupManagedCDK(ctx, code, now); ok {
+			return managed
+		}
+	}
 	if resp.Status == "unknown" {
 		resp.Message = "未找到可查询的卡密记录，请检查输入或联系客服。"
 	}
 	return resp
+}
+
+func lookupManagedCDK(ctx context.Context, code string, now time.Time) (cdkLookupResult, bool) {
+	response := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
+	attempt, err := db.GetManagedActivationByCodeHash(managedCodeHash(code))
+	if err != nil {
+		return response, false
+	}
+	if attempt != nil && attempt.QueryExpiresAt > 0 && now.UTC().Unix() >= attempt.QueryExpiresAt {
+		return publicQueryExpiredResult(code), true
+	}
+	task, status, lookupErr := jzactivation.NewFromEnv().LookupTask(ctx, code)
+	if lookupErr != nil {
+		var providerErr *jzactivation.ResponseError
+		if errors.As(lookupErr, &providerErr) && providerErr.Code == "cdk_replaced" {
+			response.Status = "disabled"
+			response.Message = "该卡密已更换，请使用换码时获得的新卡密。"
+			return response, true
+		}
+		if status == http.StatusNotFound && attempt != nil {
+			switch attempt.Status {
+			case "verified", "preflight", "not_submitted":
+				response.Status = "unused"
+				response.CanResubmit = true
+				response.Plan = attempt.Plan
+				response.Message = "卡密已验证，尚未提交本次兑换"
+				return response, true
+			case "submitted", "pending", "review", "manual_review":
+				response.Status = "processing"
+				response.Plan = attempt.Plan
+				response.AccountEmail = maskEmail(attempt.AccountEmail)
+				response.Message = "卡密兑换处理中"
+				return response, true
+			}
+		}
+		return response, false
+	}
+	if status < 200 || status >= 300 || strings.TrimSpace(task.TaskID) == "" {
+		return response, false
+	}
+	if attempt == nil || attempt.QueryExpiresAt <= 0 {
+		createdAt, parseErr := time.ParseInLocation("2006-01-02 15:04:05", task.CreatedAt, time.FixedZone("UTC+8", 8*3600))
+		if parseErr != nil || now.After(createdAt.Add(publicCDKQueryWindow)) {
+			return publicQueryExpiredResult(code), true
+		}
+	}
+	response.Plan = firstNonEmpty(task.PlanType, func() string {
+		if attempt != nil {
+			return attempt.Plan
+		}
+		return ""
+	}())
+	response.AccountEmail = maskEmail(task.AccountEmail)
+	switch strings.ToLower(strings.TrimSpace(task.TaskStatus)) {
+	case "completed":
+		response.Status, response.Used = "used", true
+		response.Message = "卡密使用成功"
+		if task.CompletedAt != "" {
+			completed := task.CompletedAt
+			response.UsedAt = &completed
+		}
+	case "failed":
+		response.Status = "failed"
+		response.CanResubmit = true
+		response.Message = "使用失败，卡密可以重新提交"
+	case "pending", "submitted", "manual_review":
+		response.Status = "processing"
+		response.Message = "卡密兑换处理中"
+	default:
+		response.Status = "processing"
+		response.Message = "卡密状态正在确认"
+	}
+	if attempt != nil {
+		_ = db.RecordManagedActivationResult(attempt.CodeHash, task.TaskID, task.PlanType, task.TaskStatus, task.AccountEmail, task.FailureReason, now)
+	}
+	return response, true
 }
