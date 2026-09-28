@@ -94,6 +94,19 @@ const operationsCustomerCurrentCTE = `WITH all_customer_completions AS (
 	LEFT JOIN marketplace_managed_cdk_bindings b ON b.code_hash=m.code_hash
 	WHERE LOWER(TRIM(m.status))='completed' AND TRIM(m.account_email)<>''
 	  AND m.activated_at>0 AND m.subscription_expires_at>0
+	UNION ALL
+	SELECT -(1000000000+z.upstream_id),LOWER(TRIM(z.account_email)),TRIM(z.account_email),z.plan,
+	       CASE z.plan WHEN 'plus' THEN 'ChatGPT Plus' WHEN 'go' THEN 'ChatGPT Go'
+	         WHEN 'pro_5x' THEN 'ChatGPT Pro 5X（菲律宾卡升级）'
+	         WHEN 'pro_5x_cl' THEN 'ChatGPT Pro 5X（智利区充值）'
+	         WHEN 'pro_20x' THEN 'ChatGPT Pro 20X' ELSE '账号升级' END,
+	       z.activated_at,z.subscription_expires_at,z.expiry_estimated,
+	       z.upstream_id,z.card_id,''
+	FROM zovo_direct_order_mirror z
+	WHERE LOWER(TRIM(z.status))='completed' AND TRIM(z.account_email)<>''
+	  AND z.account_email NOT LIKE '%*%' AND z.account_email LIKE '%@%'
+	  AND z.activated_at>0 AND z.subscription_expires_at>0
+	  AND NOT EXISTS(SELECT 1 FROM local_cdks l WHERE l.upstream_id=z.upstream_id)
 ), ranked_customers AS (
 	SELECT c.*,
 	       ROW_NUMBER() OVER (
@@ -324,6 +337,10 @@ func OperationsCustomersSearch(c *gin.Context) {
 			UNION ALL
 			SELECT account_email,activated_at,subscription_expires_at FROM managed_activation_attempts
 			WHERE LOWER(TRIM(status))='completed'
+			UNION ALL
+			SELECT account_email,activated_at,subscription_expires_at FROM zovo_direct_order_mirror
+			WHERE LOWER(TRIM(status))='completed' AND plan NOT LIKE 'credit%'
+			  AND account_email NOT LIKE '%*%' AND account_email LIKE '%@%'
 		)`).Scan(&completed, &missingEmail, &missingDates)
 	if err != nil {
 		localError(c, 500, "读取客户数据质量失败")

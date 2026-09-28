@@ -85,6 +85,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	handler.StartNotificationDispatcher(ctx)
 	handler.StartCustomerExpiryNotifications(ctx)
 	handler.StartCardPlatformInsights(ctx)
+	handler.StartDirectOrderMirror(ctx)
 
 	return &Server{
 		engine: engine,

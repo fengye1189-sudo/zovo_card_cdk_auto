@@ -113,6 +113,28 @@ func TestOperationsCustomerDashboardDeduplicatesLatestAccountAndFiltersExpiry(t 
 	}
 }
 
+func TestOperationsCustomerDashboardIncludesMirroredZovoCompletion(t *testing.T) {
+	f := newLocalFixture(t)
+	f.router.POST("/customers/search", OperationsCustomersSearch)
+	now := time.Now().Unix()
+	if _, err := db.DB.Exec(`INSERT INTO zovo_direct_order_mirror(
+	 upstream_id,account_email,product,plan,status,activated_at,subscription_expires_at,
+	 expiry_estimated,source,synced_at) VALUES(901,'manual@example.com','gpt','plus','completed',?,?,?,?,?)`,
+		now, time.Unix(now, 0).UTC().AddDate(0, 1, 0).Unix(), 1, "zovo_api", now); err != nil {
+		t.Fatal(err)
+	}
+	status, body := f.call("/customers/search", gin.H{
+		"page": 1, "page_size": 25, "plan": "plus", "segment": "new_today", "timezone": "Asia/Bangkok",
+	})
+	if status != 200 || body["total"] != float64(1) {
+		t.Fatal("mirrored completion missing from customer dashboard", status, body)
+	}
+	row := body["list"].([]any)[0].(map[string]any)
+	if row["email"] != "manual@example.com" || row["upstream_id"] != float64(901) || row["expiry_estimated"] != true {
+		t.Fatal("unexpected mirrored customer", row)
+	}
+}
+
 func TestOperationsCustomerDashboardRejectsUnsafeFilters(t *testing.T) {
 	f := newLocalFixture(t)
 	f.router.POST("/customers/search", OperationsCustomersSearch)

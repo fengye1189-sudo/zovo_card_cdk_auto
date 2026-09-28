@@ -29,6 +29,29 @@ func InitLocalCDK() error {
   local_id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL, selected_at INTEGER NOT NULL
  );
  CREATE INDEX IF NOT EXISTS idx_local_card_selections_card ON local_card_selections(card_id,selected_at);
+ -- Read-only mirror of GPT direct orders observed through the current API key
+ -- or signed Zovo web callbacks. It never authorizes a payment or upstream
+ -- mutation; upstream_id is the durable idempotency key.
+ CREATE TABLE IF NOT EXISTS zovo_direct_order_mirror (
+  upstream_id INTEGER PRIMARY KEY,
+  client_request_id TEXT NOT NULL DEFAULT '',
+  account_email TEXT NOT NULL DEFAULT '',
+  product TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT '',
+  card_id INTEGER NOT NULL DEFAULT 0, card_last_four TEXT NOT NULL DEFAULT '',
+  currency TEXT NOT NULL DEFAULT '', quoted_amount_minor INTEGER NOT NULL DEFAULT 0,
+  final_amount_minor INTEGER NOT NULL DEFAULT 0,
+  renewal_status TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0,
+  completed_at INTEGER NOT NULL DEFAULT 0, activated_at INTEGER NOT NULL DEFAULT 0,
+  subscription_expires_at INTEGER NOT NULL DEFAULT 0,
+  expiry_estimated INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT '', synced_at INTEGER NOT NULL
+ );
+ CREATE INDEX IF NOT EXISTS idx_zovo_direct_mirror_customer
+ ON zovo_direct_order_mirror(status,plan,subscription_expires_at);
+ CREATE INDEX IF NOT EXISTS idx_zovo_direct_mirror_request
+ ON zovo_direct_order_mirror(client_request_id);
  -- The marketplace can bind an irreversible code hash to its opaque paid order
  -- ID. No purchaser contact details, plaintext codes, or account credentials
  -- belong in this operational database.
