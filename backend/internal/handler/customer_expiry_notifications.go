@@ -22,13 +22,14 @@ const customerExpiryReminderInterval = 5 * time.Minute
 var customerExpiryReminderMu sync.Mutex
 
 type customerExpiryReminder struct {
-	EventID        string
-	LocalID        int64
-	AccountEmail   string
-	Plan           string
-	ActivatedAt    int64
-	DueAt          int64
-	ExpiryEstimated bool
+	EventID            string
+	LocalID            int64
+	MarketplaceOrderID string
+	AccountEmail       string
+	Plan               string
+	ActivatedAt        int64
+	DueAt              int64
+	ExpiryEstimated    bool
 }
 
 func InitCustomerExpiryNotifications() error {
@@ -53,7 +54,13 @@ func InitCustomerExpiryNotifications() error {
 	UPDATE customer_expiry_notifications
 		SET status='review',last_error='REMINDER_RESULT_UNCERTAIN',updated_at=strftime('%s','now')
 		WHERE status='sending';`)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err = db.DB.Exec(`ALTER TABLE customer_expiry_notifications ADD COLUMN marketplace_order_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return err
+	}
+	return nil
 }
 
 func customerExpiryEventID(email, plan string, activatedAt int64) string {
@@ -62,8 +69,8 @@ func customerExpiryEventID(email, plan string, activatedAt int64) string {
 }
 
 func seedCustomerExpiryNotifications(now int64) error {
-	rows, err := db.DB.Query(operationsCustomerCurrentCTE + `SELECT id,email,plan,activated_at,
-		subscription_expires_at,expiry_estimated FROM current_customers
+	rows, err := db.DB.Query(operationsCustomerCurrentCTE+`SELECT id,email,plan,activated_at,
+		subscription_expires_at,expiry_estimated,marketplace_order_id FROM current_customers
 		WHERE subscription_expires_at>?`, now)
 	if err != nil {
 		return err
@@ -72,7 +79,7 @@ func seedCustomerExpiryNotifications(now int64) error {
 	for rows.Next() {
 		var item customerExpiryReminder
 		var estimated int
-		if err = rows.Scan(&item.LocalID, &item.AccountEmail, &item.Plan, &item.ActivatedAt, &item.DueAt, &estimated); err != nil {
+		if err = rows.Scan(&item.LocalID, &item.AccountEmail, &item.Plan, &item.ActivatedAt, &item.DueAt, &estimated, &item.MarketplaceOrderID); err != nil {
 			return err
 		}
 		item.AccountEmail = strings.ToLower(strings.TrimSpace(item.AccountEmail))
@@ -86,13 +93,14 @@ func seedCustomerExpiryNotifications(now int64) error {
 			estimatedValue = 1
 		}
 		_, err = db.DB.Exec(`INSERT INTO customer_expiry_notifications
-			(event_id,local_id,account_email,plan,activated_at,due_at,expiry_estimated,status,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,'pending',?,?)
+			(event_id,local_id,marketplace_order_id,account_email,plan,activated_at,due_at,expiry_estimated,status,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,'pending',?,?)
 			ON CONFLICT(event_id) DO UPDATE SET
-				local_id=excluded.local_id,account_email=excluded.account_email,plan=excluded.plan,
+				local_id=excluded.local_id,marketplace_order_id=excluded.marketplace_order_id,
+				account_email=excluded.account_email,plan=excluded.plan,
 				due_at=excluded.due_at,expiry_estimated=excluded.expiry_estimated,updated_at=excluded.updated_at
-			WHERE customer_expiry_notifications.status='pending'`, item.EventID, item.LocalID, item.AccountEmail,
-			item.Plan, item.ActivatedAt, item.DueAt, estimatedValue, now, now)
+			WHERE customer_expiry_notifications.status='pending'`, item.EventID, item.LocalID, item.MarketplaceOrderID,
+			item.AccountEmail, item.Plan, item.ActivatedAt, item.DueAt, estimatedValue, now, now)
 		if err != nil {
 			return err
 		}
@@ -101,7 +109,7 @@ func seedCustomerExpiryNotifications(now int64) error {
 }
 
 func dueCustomerExpiryNotifications(now int64, limit int) ([]customerExpiryReminder, error) {
-	rows, err := db.DB.Query(`SELECT event_id,local_id,account_email,plan,activated_at,due_at,expiry_estimated
+	rows, err := db.DB.Query(`SELECT event_id,local_id,marketplace_order_id,account_email,plan,activated_at,due_at,expiry_estimated
 		FROM customer_expiry_notifications WHERE status='pending' AND due_at<=?
 		ORDER BY due_at,event_id LIMIT ?`, now, limit)
 	if err != nil {
@@ -112,7 +120,7 @@ func dueCustomerExpiryNotifications(now int64, limit int) ([]customerExpiryRemin
 	for rows.Next() {
 		var item customerExpiryReminder
 		var estimated int
-		if err = rows.Scan(&item.EventID, &item.LocalID, &item.AccountEmail, &item.Plan, &item.ActivatedAt, &item.DueAt, &estimated); err != nil {
+		if err = rows.Scan(&item.EventID, &item.LocalID, &item.MarketplaceOrderID, &item.AccountEmail, &item.Plan, &item.ActivatedAt, &item.DueAt, &estimated); err != nil {
 			return nil, err
 		}
 		item.ExpiryEstimated = estimated == 1
@@ -122,12 +130,18 @@ func dueCustomerExpiryNotifications(now int64, limit int) ([]customerExpiryRemin
 }
 
 func sendCustomerExpiryNotification(ctx context.Context, item customerExpiryReminder) (string, error) {
-	identities, err := marketplaceCustomerIdentities(ctx, nil, []string{item.AccountEmail}, []marketplaceCustomerRecord{{
+	orderIDs := []string(nil)
+	if item.MarketplaceOrderID != "" {
+		orderIDs = []string{item.MarketplaceOrderID}
+	}
+	identities, err := marketplaceCustomerIdentities(ctx, orderIDs, []string{item.AccountEmail}, []marketplaceCustomerRecord{{
 		AccountEmail: item.AccountEmail, ActivatedAt: item.ActivatedAt, Plan: item.Plan,
 	}})
 	identity := marketplaceCustomerIdentity{AccountEmail: item.AccountEmail, Source: "upgrade_email_inferred", Confidence: 35}
 	if err == nil {
-		if resolved, ok := identities["email:"+item.AccountEmail]; ok {
+		if resolved, ok := identities["order:"+item.MarketplaceOrderID]; ok && item.MarketplaceOrderID != "" {
+			identity = resolved
+		} else if resolved, ok := identities["email:"+item.AccountEmail]; ok {
 			identity = resolved
 		}
 	}

@@ -50,6 +50,9 @@ func newLocalFixture(t *testing.T) *localFixture {
 	if e = db.InitLocalCDK(); e != nil {
 		t.Fatal(e)
 	}
+	if e = db.InitManagedActivation(); e != nil {
+		t.Fatal(e)
+	}
 	if e = InitOperationsProducts(); e != nil {
 		t.Fatal(e)
 	}

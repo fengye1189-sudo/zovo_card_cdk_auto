@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -15,20 +16,23 @@ var (
 const managedQueryWindow = 7 * 24 * time.Hour
 
 type ManagedActivationAttempt struct {
-	CodeHash        string
-	AttemptHash     string
-	PreflightHash   string
-	SessionHash     string
-	TaskID          string
-	Plan            string
-	Status          string
-	AccountEmail    string
-	FailureReason   string
-	SubmitClaimedAt int64
-	QueryStartedAt  int64
-	QueryExpiresAt  int64
-	CreatedAt       int64
-	UpdatedAt       int64
+	CodeHash              string
+	AttemptHash           string
+	PreflightHash         string
+	SessionHash           string
+	TaskID                string
+	Plan                  string
+	Status                string
+	AccountEmail          string
+	FailureReason         string
+	SubmitClaimedAt       int64
+	QueryStartedAt        int64
+	QueryExpiresAt        int64
+	CreatedAt             int64
+	UpdatedAt             int64
+	ActivatedAt           int64
+	SubscriptionExpiresAt int64
+	ExpiryEstimated       bool
 }
 
 func InitManagedActivation() error {
@@ -57,6 +61,26 @@ func InitManagedActivation() error {
 		CREATE INDEX IF NOT EXISTS idx_managed_activation_expiry
 		ON managed_activation_attempts(query_expires_at);
 	`)
+	if err != nil {
+		return err
+	}
+	for _, migration := range []string{
+		`ALTER TABLE managed_activation_attempts ADD COLUMN activated_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_activation_attempts ADD COLUMN subscription_expires_at INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE managed_activation_attempts ADD COLUMN expiry_estimated INTEGER NOT NULL DEFAULT 0`,
+	} {
+		if _, err = DB.Exec(migration); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	_, err = DB.Exec(`UPDATE managed_activation_attempts
+		SET activated_at=CASE WHEN activated_at<=0 THEN updated_at ELSE activated_at END,
+		    subscription_expires_at=CASE WHEN subscription_expires_at<=0
+		      THEN CAST(strftime('%s',datetime(updated_at,'unixepoch','+1 month')) AS INTEGER)
+		      ELSE subscription_expires_at END,
+		    expiry_estimated=1
+		WHERE LOWER(TRIM(status))='completed' AND TRIM(account_email)<>''
+		  AND (activated_at<=0 OR subscription_expires_at<=0)`)
 	return err
 }
 
@@ -74,7 +98,7 @@ func BeginManagedActivation(codeHash, attemptHash, plan string, now time.Time) e
 	err = scanManagedAttempt(tx.QueryRow(`
 		SELECT code_hash,attempt_hash,preflight_hash,session_hash,task_id,plan,status,
 		       account_email,failure_reason,submit_claimed_at,query_started_at,query_expires_at,
-		       created_at,updated_at
+		       created_at,updated_at,activated_at,subscription_expires_at,expiry_estimated
 		FROM managed_activation_attempts WHERE code_hash=?
 	`, codeHash), &existing)
 	if err != nil && err != sql.ErrNoRows {
@@ -183,14 +207,26 @@ func RecordManagedActivationSubmission(codeHash, attemptHash, taskID, status str
 }
 
 func RecordManagedActivationResult(codeHash, taskID, plan, status, email, failureReason string, now time.Time) error {
+	return RecordManagedActivationResultDetails(codeHash, taskID, plan, status, email, failureReason, 0, 0, now)
+}
+
+// RecordManagedActivationResultDetails persists the first confirmed completion
+// window. Repeated public lookups are idempotent and cannot move a customer's
+// renewal date forward.
+func RecordManagedActivationResultDetails(codeHash, taskID, plan, status, email, failureReason string, activatedAt, expiresAt int64, now time.Time) error {
 	_, err := DB.Exec(`
 		UPDATE managed_activation_attempts
 		SET task_id=CASE WHEN ?<>'' THEN ? ELSE task_id END,
 		    plan=CASE WHEN ?<>'' THEN ? ELSE plan END,status=?,
 		    account_email=CASE WHEN ?<>'' THEN ? ELSE account_email END,
-		    failure_reason=?,updated_at=?
+		    failure_reason=?,updated_at=?,
+		    activated_at=CASE WHEN LOWER(TRIM(?))='completed' AND activated_at<=0 AND ?>0 THEN ? ELSE activated_at END,
+		    subscription_expires_at=CASE WHEN LOWER(TRIM(?))='completed' AND subscription_expires_at<=0 AND ?>? THEN ? ELSE subscription_expires_at END,
+		    expiry_estimated=CASE WHEN LOWER(TRIM(?))='completed' AND ?>0 AND ?>? THEN 1 ELSE expiry_estimated END
 		WHERE code_hash=?
-	`, taskID, taskID, plan, plan, status, email, email, failureReason, now.UTC().Unix(), codeHash)
+	`, taskID, taskID, plan, plan, status, email, email, failureReason, now.UTC().Unix(),
+		status, activatedAt, activatedAt, status, expiresAt, activatedAt, expiresAt,
+		status, activatedAt, expiresAt, activatedAt, codeHash)
 	return err
 }
 
@@ -202,7 +238,7 @@ func GetManagedActivationByCodeHash(codeHash string) (*ManagedActivationAttempt,
 	err := scanManagedAttempt(DB.QueryRow(`
 		SELECT code_hash,attempt_hash,preflight_hash,session_hash,task_id,plan,status,
 		       account_email,failure_reason,submit_claimed_at,query_started_at,query_expires_at,
-		       created_at,updated_at
+		       created_at,updated_at,activated_at,subscription_expires_at,expiry_estimated
 		FROM managed_activation_attempts WHERE code_hash=?
 	`, codeHash), &row)
 	if err == sql.ErrNoRows {
@@ -222,7 +258,7 @@ func GetManagedActivationByAttemptHash(attemptHash string) (*ManagedActivationAt
 	err := scanManagedAttempt(DB.QueryRow(`
 		SELECT code_hash,attempt_hash,preflight_hash,session_hash,task_id,plan,status,
 		       account_email,failure_reason,submit_claimed_at,query_started_at,query_expires_at,
-		       created_at,updated_at
+		       created_at,updated_at,activated_at,subscription_expires_at,expiry_estimated
 		FROM managed_activation_attempts WHERE attempt_hash=?
 	`, attemptHash), &row)
 	if err == sql.ErrNoRows {
@@ -237,8 +273,11 @@ func GetManagedActivationByAttemptHash(attemptHash string) (*ManagedActivationAt
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanManagedAttempt(row rowScanner, out *ManagedActivationAttempt) error {
-	return row.Scan(&out.CodeHash, &out.AttemptHash, &out.PreflightHash, &out.SessionHash,
+	var estimated int
+	err := row.Scan(&out.CodeHash, &out.AttemptHash, &out.PreflightHash, &out.SessionHash,
 		&out.TaskID, &out.Plan, &out.Status, &out.AccountEmail, &out.FailureReason,
 		&out.SubmitClaimedAt, &out.QueryStartedAt, &out.QueryExpiresAt,
-		&out.CreatedAt, &out.UpdatedAt)
+		&out.CreatedAt, &out.UpdatedAt, &out.ActivatedAt, &out.SubscriptionExpiresAt, &estimated)
+	out.ExpiryEstimated = estimated == 1
+	return err
 }

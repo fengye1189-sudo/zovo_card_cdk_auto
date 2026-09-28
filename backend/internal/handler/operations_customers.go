@@ -76,17 +76,31 @@ type marketplaceCustomerRecord struct {
 	Plan         string `json:"plan"`
 }
 
-const operationsCustomerCurrentCTE = `WITH ranked_customers AS (
+const operationsCustomerCurrentCTE = `WITH all_customer_completions AS (
 	SELECT l.id,LOWER(TRIM(l.email)) AS account_key,TRIM(l.email) AS email,l.plan,
 	       l.upgrade_type,l.activated_at,l.subscription_expires_at,l.expiry_estimated,
-	       l.upstream_id,l.card_id,COALESCE(m.marketplace_order_id,'') AS marketplace_order_id,
-	       ROW_NUMBER() OVER (
-	           PARTITION BY LOWER(TRIM(l.email))
-	           ORDER BY l.activated_at DESC,l.id DESC
-	       ) AS customer_rank
-	FROM local_cdks l LEFT JOIN marketplace_local_cdk_bindings m ON m.local_id=l.id
+	       l.upstream_id,l.card_id,COALESCE(b.marketplace_order_id,'') AS marketplace_order_id
+	FROM local_cdks l LEFT JOIN marketplace_local_cdk_bindings b ON b.local_id=l.id
 	WHERE l.status='consumed' AND TRIM(l.email)<>''
 	  AND l.activated_at>0 AND l.subscription_expires_at>0
+	UNION ALL
+	SELECT -m.rowid,LOWER(TRIM(m.account_email)),TRIM(m.account_email),m.plan,
+	       CASE m.plan WHEN 'plus' THEN 'ChatGPT Plus' WHEN 'go' THEN 'ChatGPT Go'
+	         WHEN 'pro_5x' THEN 'ChatGPT Pro 5X（菲律宾卡升级）'
+	         WHEN 'pro_20x' THEN 'ChatGPT Pro 20X' ELSE '账号升级' END,
+	       m.activated_at,m.subscription_expires_at,m.expiry_estimated,
+	       0,0,COALESCE(b.marketplace_order_id,'')
+	FROM managed_activation_attempts m
+	LEFT JOIN marketplace_managed_cdk_bindings b ON b.code_hash=m.code_hash
+	WHERE LOWER(TRIM(m.status))='completed' AND TRIM(m.account_email)<>''
+	  AND m.activated_at>0 AND m.subscription_expires_at>0
+), ranked_customers AS (
+	SELECT c.*,
+	       ROW_NUMBER() OVER (
+	           PARTITION BY c.account_key
+	           ORDER BY c.activated_at DESC,c.id DESC
+	       ) AS customer_rank
+	FROM all_customer_completions c
 ), current_customers AS (
 	SELECT id,account_key,email,plan,upgrade_type,activated_at,subscription_expires_at,
 	       expiry_estimated,upstream_id,card_id,marketplace_order_id
@@ -305,7 +319,12 @@ func OperationsCustomersSearch(c *gin.Context) {
 	err = tx.QueryRow(`SELECT COUNT(*),
 		COALESCE(SUM(CASE WHEN TRIM(email)='' THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN activated_at<=0 OR subscription_expires_at<=0 THEN 1 ELSE 0 END),0)
-		FROM local_cdks WHERE status='consumed'`).Scan(&completed, &missingEmail, &missingDates)
+		FROM (
+			SELECT email,activated_at,subscription_expires_at FROM local_cdks WHERE status='consumed'
+			UNION ALL
+			SELECT account_email,activated_at,subscription_expires_at FROM managed_activation_attempts
+			WHERE LOWER(TRIM(status))='completed'
+		)`).Scan(&completed, &missingEmail, &missingDates)
 	if err != nil {
 		localError(c, 500, "读取客户数据质量失败")
 		return
@@ -379,8 +398,12 @@ func OperationsCustomersSearch(c *gin.Context) {
 			emailEnd = len(accountEmails)
 		}
 		recordStart, recordEnd := start, start+100
-		if recordStart > len(records) { recordStart = len(records) }
-		if recordEnd > len(records) { recordEnd = len(records) }
+		if recordStart > len(records) {
+			recordStart = len(records)
+		}
+		if recordEnd > len(records) {
+			recordEnd = len(records)
+		}
 		identities, lookupErr := marketplaceCustomerIdentities(c.Request.Context(), orderIDs[orderStart:orderEnd], accountEmails[emailStart:emailEnd], records[recordStart:recordEnd])
 		if lookupErr != nil {
 			identityNotice = "商城身份暂时无法读取；未明确关联的记录按升级邮箱推定，不会自动绑定纸飞机。"
@@ -390,12 +413,16 @@ func OperationsCustomersSearch(c *gin.Context) {
 			identity, ok := identities["order:"+list[i].MarketplaceOrderID]
 			if ok {
 				list[i].IdentitySource = identity.Source
-				if list[i].IdentitySource == "" { list[i].IdentitySource = "marketplace_order" }
+				if list[i].IdentitySource == "" {
+					list[i].IdentitySource = "marketplace_order"
+				}
 			} else {
 				identity, ok = identities["email:"+strings.ToLower(strings.TrimSpace(list[i].Email))]
 				if ok {
 					list[i].IdentitySource = identity.Source
-					if list[i].IdentitySource == "" { list[i].IdentitySource = "upgrade_email_match" }
+					if list[i].IdentitySource == "" {
+						list[i].IdentitySource = "upgrade_email_match"
+					}
 				}
 			}
 			if ok {

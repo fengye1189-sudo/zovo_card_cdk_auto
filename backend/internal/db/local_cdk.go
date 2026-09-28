@@ -42,6 +42,15 @@ func InitLocalCDK() error {
  -- by an earlier build that did not yet have the column-level UNIQUE clause.
  CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_local_cdk_order_unique
  ON marketplace_local_cdk_bindings(marketplace_order_id);
+ -- JZ inventory is delivered by the marketplace before the first customer
+ -- visit creates a managed activation attempt. Persist the signed hash/order
+ -- association independently so the later success can resolve the exact buyer.
+ CREATE TABLE IF NOT EXISTS marketplace_managed_cdk_bindings (
+  code_hash TEXT PRIMARY KEY, marketplace_order_id TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL
+ );
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_marketplace_managed_cdk_order_unique
+ ON marketplace_managed_cdk_bindings(marketplace_order_id);
  -- A durable outbound completion event is committed with the authoritative
  -- consumed transition and retried by the automation cycle until acknowledged.
  CREATE TABLE IF NOT EXISTS marketplace_completion_outbox (

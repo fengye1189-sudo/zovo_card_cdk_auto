@@ -313,6 +313,17 @@ func managedTaskPayload(task jzactivation.TaskResult, attempt *db.ManagedActivat
 	return result
 }
 
+func recordManagedTaskResult(codeHash string, task jzactivation.TaskResult, now time.Time) error {
+	activatedAt, expiresAt := int64(0), int64(0)
+	if strings.EqualFold(strings.TrimSpace(task.TaskStatus), "completed") {
+		completed := parseCompletionTimeAtLocation(task.CompletedAt, now.Unix(), time.FixedZone("UTC+8", 8*3600))
+		activatedAt = completed.Unix()
+		expiresAt = completed.AddDate(0, 1, 0).Unix()
+	}
+	return db.RecordManagedActivationResultDetails(codeHash, task.TaskID, task.PlanType, task.TaskStatus,
+		task.AccountEmail, task.FailureReason, activatedAt, expiresAt, now)
+}
+
 // tryManagedResultByCode returns false only when this code is neither a known
 // managed attempt nor a task recognized by the managed activation service.
 func tryManagedResultByCode(c *gin.Context, code string) bool {
@@ -367,7 +378,7 @@ func tryManagedResultByCode(c *gin.Context, code string) bool {
 	if attempt == nil {
 		attempt = &db.ManagedActivationAttempt{CodeHash: codeHash, Plan: task.PlanType}
 	}
-	_ = db.RecordManagedActivationResult(codeHash, task.TaskID, task.PlanType, task.TaskStatus, task.AccountEmail, task.FailureReason, time.Now())
+	_ = recordManagedTaskResult(codeHash, task, time.Now())
 	refreshed, _ := db.GetManagedActivationByCodeHash(codeHash)
 	if refreshed != nil {
 		attempt = refreshed

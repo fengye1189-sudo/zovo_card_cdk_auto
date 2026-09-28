@@ -92,8 +92,8 @@ func MarketplaceLocalCDKBind(c *gin.Context) {
 	}
 	localID, existing, err := bindMarketplaceLocalCDK(codeHash, orderID, time.Now().Unix())
 	if errors.Is(err, errMarketplaceBindingNotFound) {
-		localError(c, http.StatusNotFound, "兑换码不存在")
-		return
+		existing, err = bindMarketplaceManagedCDK(codeHash, orderID, time.Now().Unix())
+		localID = 0
 	}
 	if errors.Is(err, errMarketplaceBindingConflict) {
 		localError(c, http.StatusConflict, "兑换码已绑定至其他订单")
@@ -103,7 +103,54 @@ func MarketplaceLocalCDKBind(c *gin.Context) {
 		localError(c, http.StatusServiceUnavailable, "订单绑定暂时无法保存")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "localId": localID, "alreadyBound": existing})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "localId": localID, "alreadyBound": existing,
+		"bindingType": func() string {
+			if localID > 0 {
+				return "local"
+			}
+			return "managed"
+		}()})
+}
+
+// bindMarketplaceManagedCDK records a trusted marketplace delivery even before
+// the customer first opens the unified redemption page. That first visit is
+// what creates managed_activation_attempts, so requiring the attempt here
+// would lose the exact order/customer association for every JZ delivery.
+func bindMarketplaceManagedCDK(codeHash, orderID string, now int64) (bool, error) {
+	tx, err := db.DB.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var existingCode, existingOrder string
+	err = tx.QueryRow(`SELECT code_hash,marketplace_order_id FROM marketplace_managed_cdk_bindings
+		WHERE code_hash=? OR marketplace_order_id=? LIMIT 1`, codeHash, orderID).Scan(&existingCode, &existingOrder)
+	if err == nil {
+		if existingCode != codeHash || existingOrder != orderID {
+			return false, errMarketplaceBindingConflict
+		}
+		return true, tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	var localCode, localOrder string
+	err = tx.QueryRow(`SELECT code_hash,marketplace_order_id FROM marketplace_local_cdk_bindings
+		WHERE code_hash=? OR marketplace_order_id=? LIMIT 1`, codeHash, orderID).Scan(&localCode, &localOrder)
+	if err == nil {
+		if localCode != codeHash || localOrder != orderID {
+			return false, errMarketplaceBindingConflict
+		}
+		return true, tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	if _, err = tx.Exec(`INSERT INTO marketplace_managed_cdk_bindings(code_hash,marketplace_order_id,created_at)
+		VALUES(?,?,?)`, codeHash, orderID, now); err != nil {
+		return false, err
+	}
+	return false, tx.Commit()
 }
 
 func canonicalCodeHash(raw string) (string, bool) {

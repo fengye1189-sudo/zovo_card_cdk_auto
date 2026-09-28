@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -122,5 +123,54 @@ func TestOperationsCustomerDashboardRejectsUnsafeFilters(t *testing.T) {
 	now := time.Now().Unix()
 	if _, _, err := operationsCustomerFilters(operationsCustomerSearch{Query: "literal%_\\"}, now, now-3600, now+23*3600); err != nil {
 		t.Fatal(fmt.Errorf("literal search rejected: %w", err))
+	}
+}
+
+func TestOperationsCustomersIncludesManagedJZCompletionAndLatestRenewal(t *testing.T) {
+	f := newLocalFixture(t)
+	f.router.POST("/customers/search", OperationsCustomersSearch)
+	now := time.Now().UTC()
+	codeHash := strings.Repeat("e", 64)
+	if err := db.BeginManagedActivation(codeHash, strings.Repeat("f", 64), "plus", now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	activated := now.Add(-30 * time.Minute)
+	expires := activated.AddDate(0, 1, 0)
+	if err := db.RecordManagedActivationResultDetails(codeHash, "JZ-TASK-1", "plus", "completed",
+		"jz-member@example.com", "", activated.Unix(), expires.Unix(), now); err != nil {
+		t.Fatal(err)
+	}
+	orderID := "018f27ef-7a39-7e91-89ab-cdef01234567"
+	if _, err := db.DB.Exec(`INSERT INTO marketplace_managed_cdk_bindings(code_hash,marketplace_order_id,created_at) VALUES(?,?,?)`, codeHash, orderID, now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	status, body := f.call("/customers/search", gin.H{
+		"page": 1, "page_size": 25, "state": "active", "timezone": "UTC",
+	})
+	if status != http.StatusOK || body["total"] != float64(1) {
+		t.Fatalf("managed customer missing: status=%d body=%v", status, body)
+	}
+	row := body["list"].([]any)[0].(map[string]any)
+	if row["email"] != "jz-member@example.com" || row["plan"] != "plus" || row["marketplace_order_id"] != orderID || row["expiry_estimated"] != true {
+		t.Fatalf("managed customer fields=%v", row)
+	}
+	plans := body["plans"].([]any)
+	if plans[0].(map[string]any)["valid_accounts"] != float64(1) {
+		t.Fatalf("managed completion missing from Plus summary: %v", plans)
+	}
+	if err := InitCustomerExpiryNotifications(); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedCustomerExpiryNotifications(now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	var reminderOrder, reminderEmail string
+	var dueAt int64
+	if err := db.DB.QueryRow(`SELECT marketplace_order_id,account_email,due_at
+		FROM customer_expiry_notifications`).Scan(&reminderOrder, &reminderEmail, &dueAt); err != nil {
+		t.Fatal(err)
+	}
+	if reminderOrder != orderID || reminderEmail != "jz-member@example.com" || dueAt != expires.Unix() {
+		t.Fatalf("managed renewal reminder lost buyer binding: order=%q email=%q due=%d", reminderOrder, reminderEmail, dueAt)
 	}
 }

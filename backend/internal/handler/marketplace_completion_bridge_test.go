@@ -127,6 +127,30 @@ func TestMarketplaceLocalCDKBindRejectsTamperedAndStaleRequest(t *testing.T) {
 	}
 }
 
+func TestMarketplaceBindingAcceptsManagedCodeBeforeFirstRedemption(t *testing.T) {
+	f := newLocalFixture(t)
+	installMarketplaceBindRoute(f)
+	t.Setenv("CDK_SSO_SHARED_SECRET", completionBridgeTestSecret)
+	codeHash := strings.Repeat("d", 64)
+	orderID := "018f27ef-7a39-7e91-89ab-cdef01234567"
+	status, body := signedMarketplaceBindCall(t, f.router, marketplaceCompletionBindRequest{
+		CodeHash: codeHash, OrderID: orderID,
+	}, marketplaceCompletionBindPurpose, time.Now().UnixMilli())
+	if status != http.StatusOK || body["bindingType"] != "managed" || body["alreadyBound"] != false {
+		t.Fatalf("managed bind: status=%d body=%v", status, body)
+	}
+	status, body = signedMarketplaceBindCall(t, f.router, marketplaceCompletionBindRequest{
+		CodeHash: codeHash, OrderID: orderID,
+	}, marketplaceCompletionBindPurpose, time.Now().UnixMilli()+1)
+	if status != http.StatusOK || body["alreadyBound"] != true {
+		t.Fatalf("managed rebind: status=%d body=%v", status, body)
+	}
+	var stored string
+	if err := db.DB.QueryRow(`SELECT marketplace_order_id FROM marketplace_managed_cdk_bindings WHERE code_hash=?`, codeHash).Scan(&stored); err != nil || stored != orderID {
+		t.Fatalf("stored managed binding=%q err=%v", stored, err)
+	}
+}
+
 func TestLateMarketplaceBindingQueuesAlreadyCompletedCode(t *testing.T) {
 	f := newLocalFixture(t)
 	installMarketplaceBindRoute(f)

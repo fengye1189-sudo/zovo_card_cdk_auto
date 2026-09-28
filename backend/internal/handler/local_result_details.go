@@ -24,11 +24,18 @@ func localUpgradeType(plan string) string {
 }
 
 func parseCompletionTime(raw string, fallback int64) time.Time {
+	return parseCompletionTimeAtLocation(raw, fallback, time.UTC)
+}
+
+func parseCompletionTimeAtLocation(raw string, fallback int64, location *time.Location) time.Time {
 	raw = strings.TrimSpace(raw)
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
 		if parsed, err := time.Parse(layout, raw); err == nil {
 			return parsed.UTC()
 		}
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02 15:04:05", raw, location); err == nil {
+		return parsed.UTC()
 	}
 	return time.Unix(fallback, 0).UTC()
 }

@@ -601,7 +601,7 @@ func lookupManagedCDK(ctx context.Context, code string, now time.Time) (cdkLooku
 		response.Message = "卡密状态正在确认"
 	}
 	if attempt != nil {
-		_ = db.RecordManagedActivationResult(attempt.CodeHash, task.TaskID, task.PlanType, task.TaskStatus, task.AccountEmail, task.FailureReason, now)
+		_ = recordManagedTaskResult(attempt.CodeHash, task, now)
 	}
 	return response, true
 }
