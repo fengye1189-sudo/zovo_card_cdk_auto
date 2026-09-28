@@ -387,6 +387,59 @@ func TestLocalPoolConcurrentOrdersUseDifferentCards(t *testing.T) {
 	}
 }
 
+func insertLocalMoneyHold(t *testing.T, id string, cardID, resultCardID int64) {
+	t.Helper()
+	_, err := db.DB.Exec(`INSERT INTO automation_money(
+		id,action,card_id,amount_minor,reserved_minor,before_minor,state,created_at,result_card_id)
+		VALUES(?,?,?,?,?,?,?,?,?)`, id, "topup", cardID, 1000, 1000, 1000, "pending", time.Now().Unix(), resultCardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLocalRedeemIgnoresUnrelatedMoneyHold(t *testing.T) {
+	f := newLocalFixture(t)
+	_, body := f.ready(t)
+	insertLocalMoneyHold(t, "unrelated-hold", 999, 0)
+
+	status, response := f.call("/redeem", body)
+	if status != http.StatusAccepted || f.calls.Load() != 1 {
+		t.Fatalf("unrelated money hold blocked existing-card payment: status=%d response=%v calls=%d", status, response, f.calls.Load())
+	}
+}
+
+func TestLocalRedeemSkipsOnlyCardWithMoneyHold(t *testing.T) {
+	f := newLocalFixture(t)
+	_, body := f.ready(t)
+	cfg := readLocalSettings()
+	cfg.CardID = 0
+	cfg.CardIDs = []int64{123, 456}
+	raw, _ := json.Marshal(cfg)
+	_ = db.SetSetting("local_cdk_settings", string(raw))
+	status, preflight := f.call("/preflight", body)
+	if status != http.StatusOK {
+		t.Fatalf("preflight after pool change: %d %v", status, preflight)
+	}
+	body["preflight_token"] = preflight["preflight_token"]
+	insertLocalMoneyHold(t, "card-123-hold", 123, 0)
+
+	status, response := f.call("/redeem", body)
+	if status != http.StatusAccepted || f.calls.Load() != 1 || len(f.paidCards) != 1 || f.paidCards[0] != 456 {
+		t.Fatalf("held card was not skipped: status=%d response=%v cards=%v", status, response, f.paidCards)
+	}
+}
+
+func TestLocalRedeemStopsWhenEveryCardHasMoneyHold(t *testing.T) {
+	f := newLocalFixture(t)
+	_, body := f.ready(t)
+	insertLocalMoneyHold(t, "only-card-hold", 123, 0)
+
+	status, response := f.call("/redeem", body)
+	if status != http.StatusConflict || f.calls.Load() != 0 {
+		t.Fatalf("held card was paid: status=%d response=%v calls=%d", status, response, f.calls.Load())
+	}
+}
+
 func TestLocalPoolSettingsValidation(t *testing.T) {
 	f := newLocalFixture(t)
 	f.router.POST("/settings", LocalCDKPutSettings)

@@ -122,6 +122,19 @@ func localCardHasPaymentCapacity(id int64, limit int) (bool, error) {
 	}
 	return localCardHasCycleCapacity(id, kind, time.Now().Unix())
 }
+
+// localCardMoneyHeld reports whether an automatic funding/opening operation is
+// still being reconciled for this exact card. An unrelated wallet operation
+// must not stop payments on already-funded cards, but a card being topped up
+// remains unavailable until its balance is authoritative again.
+func localCardMoneyHeld(id int64) (bool, error) {
+	var held bool
+	err := db.DB.QueryRow(`SELECT EXISTS(
+		SELECT 1 FROM automation_money
+		WHERE state IN ('inflight','unknown','pending')
+		  AND (card_id=? OR result_card_id=?))`, id, id).Scan(&held)
+	return held, err
+}
 func localShuffleCards(ids []int64) error {
 	for i := len(ids) - 1; i > 0; i-- {
 		n, e := rand.Int(rand.Reader, big.NewInt(int64(i+1)))
@@ -241,6 +254,13 @@ func localAvailableCards(c *gin.Context, cli *cardplatform.Client, s localSettin
 			continue
 		}
 		if !usable[id] {
+			continue
+		}
+		held, holdErr := localCardMoneyHeld(id)
+		if holdErr != nil {
+			return nil, holdErr
+		}
+		if held {
 			continue
 		}
 		var busy int
@@ -656,8 +676,15 @@ func LocalCDKRedeem(c *gin.Context) {
 		return
 	}
 	autoPolicy, autoVersion, autoError := readAutomationPolicy()
-	if autoError != nil || autoPolicy.Paused || automationBlocked() {
+	if autoError != nil || autoPolicy.Paused {
 		localError(c, 409, "尚未提交充值：系统正在核对资金操作，请稍后重新验证；本次不会扣款，已有订单会继续查询")
+		return
+	}
+	// Dedicated products create/fund a card for this order and therefore still
+	// require the global money-operation lock. Existing-card products are only
+	// blocked by a hold on the exact card selected below.
+	if isProDedicatedPlan(r.Plan) && s.ProDedicatedEnabled && automationBlocked() {
+		localError(c, 409, "尚未提交充值：专用卡资金操作正在核对，请稍后重新验证；本次不会扣款")
 		return
 	}
 	if req.PF == "" || r.PF != localHash(req.PF) || r.Cred != credentialBinding(req.Credential, s) || r.PFExpires <= time.Now().Unix() || r.Expires <= time.Now().Unix() {
@@ -702,7 +729,7 @@ func LocalCDKRedeem(c *gin.Context) {
 	defer tx.Rollback()
 	selectedAt := time.Now().Unix()
 	for _, id := range cards {
-		result, err := tx.Exec("UPDATE local_cdks SET status='reserved',card_id=?,request_id=?,message='订单处理中，请勿重复提交' WHERE id=? AND status='unused' AND token_hash=? AND preflight_hash=? AND credential_hash=? AND preflight_expires>? AND expires_at>? AND NOT EXISTS (SELECT 1 FROM local_cdks WHERE card_id=? AND status IN ('reserved','review')) AND EXISTS(SELECT 1 FROM local_card_cycles WHERE card_id=?) AND EXISTS(SELECT 1 FROM automation_card_lifecycle WHERE card_id=? AND retire_state='active') AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?) AND EXISTS(SELECT 1 FROM operations_products WHERE id=COALESCE((SELECT product_id FROM operations_product_bindings WHERE local_id=?),'plus') AND enabled=1 AND plan=local_cdks.plan) AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending'))", id, requestID, r.ID, localHash(req.Token), localHash(req.PF), r.Cred, selectedAt, selectedAt, id, id, id, autoVersion, r.ID)
+		result, err := tx.Exec("UPDATE local_cdks SET status='reserved',card_id=?,request_id=?,message='订单处理中，请勿重复提交' WHERE id=? AND status='unused' AND token_hash=? AND preflight_hash=? AND credential_hash=? AND preflight_expires>? AND expires_at>? AND NOT EXISTS (SELECT 1 FROM local_cdks WHERE card_id=? AND status IN ('reserved','review')) AND EXISTS(SELECT 1 FROM local_card_cycles WHERE card_id=?) AND EXISTS(SELECT 1 FROM automation_card_lifecycle WHERE card_id=? AND retire_state='active') AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=? AND COALESCE(json_extract(value,'$.paused'),0)=0) AND EXISTS(SELECT 1 FROM operations_products WHERE id=COALESCE((SELECT product_id FROM operations_product_bindings WHERE local_id=?),'plus') AND enabled=1 AND plan=local_cdks.plan) AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND (card_id=? OR result_card_id=?))", id, requestID, r.ID, localHash(req.Token), localHash(req.PF), r.Cred, selectedAt, selectedAt, id, id, id, autoVersion, r.ID, id, id)
 		if err != nil {
 			localError(c, 503, "暂时无法锁定支付卡，尚未提交充值")
 			return
