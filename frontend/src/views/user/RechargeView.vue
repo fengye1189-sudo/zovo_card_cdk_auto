@@ -832,7 +832,7 @@ async function recoverGraceSubscription() {
   const token = preflightToken.value, redemption = redemptionToken.value, sequence = preflightSequence
   recoveringSubscription.value = true
   try {
-    if (!await dialog.confirm(t('grace.confirm'), { title: t('grace.title'), okText: t('grace.action'), cancelText: t('common.cancel'), danger: true })) return
+    if (!await dialog.confirm(t('grace.confirm'), { title: t('grace.title'), okText: t('grace.confirmAction'), cancelText: t('grace.dismiss'), danger: true })) return
     if (sequence !== preflightSequence || token !== preflightToken.value || redemption !== redemptionToken.value) return
     preflightToken.value = ''
     recoveryPending.value = true
