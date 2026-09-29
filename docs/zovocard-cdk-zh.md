@@ -219,3 +219,12 @@ curl "$CDK_SITE/api/v1/public/billing/check" -H 'Content-Type: application/json'
 ```
 
 兌換代理沿用 `code/msg/data`；查詢及帳單通常是頂層物件，本站錯誤一般為 `{error:...}`，不要一律只讀 `data`。`/api/v1/admin/*` 需要本站管理員JWT，不接受卡台API Key作為管理員憑據，不向終端使用者開放。
+
+
+## 宽限期原订阅处理
+
+预检返回 `subscription_recovery_required=true` 时，可让持码人确认取消宽限期原订阅（可能立即结束宽限期权益），再调用 `POST /api/v1/cdk/recover-subscription`。请求为 `{ "redemption_token": "...", "preflight_token": "...", "confirmed": true }`，沿用同一 `X-Redemption-Device` 和出口IP，无需API Key。
+
+成功响应 `data.status` 为 `cleared` 或 `pending`；`data.preflight`（如有）包含刷新后的账号状态和新 `preflight_token`。旧预检凭证已不可重复使用。只有确认原订阅已解除才显示可再次兑换；处理中或网络错误应重新检测，不能自动重发取消或自动兑换。正常有效订阅不支持此操作。这不是普通关闭自动续费，不消耗CDK、不创建订单。
+
+独立站浏览器使用本站 `/api/v1/public/cdk/recover-subscription` 转发同一请求；服务端不附加站点管理员API Key。部署顺序：ACC → 卡台 → 独立CDK站。
