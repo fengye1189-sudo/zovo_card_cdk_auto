@@ -17,9 +17,7 @@ cd "$ROOT/backend"
 # 而且全程没有任何报错：打包成功、上传成功、一键更新也报"成功"，
 # 直到生产机起服务时 Exec format error，站点已经下线了。
 # CGO_ENABLED=0 产出静态二进制，不吃目标机的 glibc 版本。
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go build -trimpath -ldflags="-s -w -X github.com/tuzi/cdk-recharge-system/internal/handler.BuildVersion=${VER}" \
-  -o "$ROOT/dist/cdk-recharge" ./cmd/server
+bash "$ROOT/scripts/build-linux-backend.sh" "$ROOT/dist/cdk-recharge" "$VER"
 # 打包前自证架构：与其让错误在生产机上以「服务起不来」的形式暴露，不如在这里失败。
 if command -v file >/dev/null 2>&1; then
   if ! file "$ROOT/dist/cdk-recharge" | grep -q "ELF 64-bit.*x86-64"; then

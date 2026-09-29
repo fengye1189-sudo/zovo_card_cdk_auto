@@ -21,9 +21,8 @@ cd "$ROOT/backend"
 # 而原来这里不设 GOOS/GOARCH——在 macOS 上执行本脚本就会上传一个 Mach-O 二进制。
 # 失败方式很难看：上传/解包/覆盖全部成功，systemctl restart 才报
 # Exec format error，此时旧二进制已经被覆盖（只剩 .bak 可回滚）。
-# CGO_ENABLED=0 产出静态二进制，不吃目标机 glibc 版本。
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  go build -ldflags="-s -w" -o "$ROOT/dist/cdk-recharge" ./cmd/server/main.go
+# SQLite 需要 CGO；统一由 Linux 构建器静态链接，不能生成禁用 SQLite 的空壳。
+bash "$ROOT/scripts/build-linux-backend.sh" "$ROOT/dist/cdk-recharge"
 if command -v file >/dev/null 2>&1; then
   if ! file "$ROOT/dist/cdk-recharge" | grep -q "ELF 64-bit.*x86-64"; then
     echo "产物不是 linux/amd64 ELF，拒绝上传：$(file "$ROOT/dist/cdk-recharge")"
