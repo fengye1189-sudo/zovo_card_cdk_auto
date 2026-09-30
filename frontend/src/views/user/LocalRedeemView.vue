@@ -36,7 +36,8 @@
   </div>
 </div> <span aria-hidden="true">↗</span></a>
       <label for="local-session" class="block">账号 Session</label>
-      <textarea id="local-session" v-model="session" class="input font-mono h-40" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Session JSON" />
+      <textarea id="local-session" v-model="session" class="input font-mono h-40" autocomplete="off" spellcheck="false" placeholder="粘贴完整 Session JSON（系统会自动识别）" @input="error=''" />
+      <button v-if="session" type="button" class="app-link text-sm" :disabled="busy" @click="session='';error=''">清空旧凭证并重新粘贴</button>
       <div class="flex gap-3"><button type="button" class="btn-secondary" :disabled="busy" @click="reset">返回</button><button class="btn-primary flex-1" :disabled="busy || !session.trim()">{{ busy?'验证账号中…':'验证账号' }}</button></div>
     </form>
     <section v-else-if="step===3" class="card space-y-4">
@@ -101,7 +102,18 @@ const statusLabel=computed(()=>({completed:'已完成',pending:'正在处理中'
 class ApiError extends Error{status:number;constructor(message:string,status:number){super(message);this.status=status}}
 async function api(path:string,body:any){const r=await fetch('/api/v1/public/local-cdk/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-Redemption-Device':device},body:JSON.stringify(body),cache:'no-store'});const d=await r.json();if(!r.ok){if(r.status===401){reset()}throw new ApiError(d.error || '服务暂时不可用，请稍后再试',r.status)}return d}
 async function run(action:()=>Promise<void>){if(busy.value)return;busy.value=true;error.value='';try{await action()}catch(e:any){error.value=e.message || '网络连接异常，请稍后再试'}finally{busy.value=false}}
-function credential(){return {mode:'session',session:session.value.trim()}}
+function credential(){
+ const raw=session.value.trim()
+ try{
+  const parsed=JSON.parse(raw)
+  const sessionToken=String(parsed?.sessionToken||parsed?.session_token||parsed?.token?.sessionToken||'').trim()
+  if(sessionToken)return {mode:'session',session:raw}
+  const accessToken=String(parsed?.accessToken||parsed?.access_token||parsed?.account?.accessToken||'').trim()
+  if(accessToken)return {mode:'access_token',accessToken}
+ }catch{}
+ if(raw.startsWith('eyJ')&&raw.split('.').length===3)return {mode:'access_token',accessToken:raw}
+ return {mode:'session',session:raw}
+}
 async function preview(){await run(async()=>{code.value=normalizeLocalCode(code.value);const d=await api('preview',{code:code.value});token.value=d.redemption_token;previewPlan.value=d.plan||'';sessionStorage.setItem('maple-redemption',token.value);if(d.status!=='unused'){step.value=4;await refresh()}else{step.value=2}})}
 async function preflight(){await run(async()=>{account.value=await api('preflight',{redemption_token:token.value,credential:credential()});pf.value=account.value.preflight_token;confirmed.value=false;step.value=3})}
 async function redeem(){if(!confirmed.value)return;await run(async()=>{try{result.value=await api('redeem',{redemption_token:token.value,preflight_token:pf.value,credential:credential(),confirmed:true});step.value=4;schedule()}catch(e){if(e instanceof ApiError&&e.status===409){try{result.value=await api('result',{redemption_token:token.value});if(result.value.status==='unused'){step.value=2;throw e}}catch(check){if(check===e)throw e}}step.value=4;schedule();throw e}finally{session.value='';pf.value='';confirmed.value=false}})}

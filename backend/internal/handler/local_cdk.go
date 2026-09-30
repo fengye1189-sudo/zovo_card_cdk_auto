@@ -577,11 +577,12 @@ func LocalCDKPreflight(c *gin.Context) {
 		return
 	}
 	var cred struct {
-		Mode    string `json:"mode"`
-		Session string `json:"session"`
+		Mode        string `json:"mode"`
+		Session     string `json:"session"`
+		AccessToken string `json:"accessToken"`
 	}
-	if json.Unmarshal(req.Credential, &cred) != nil || cred.Mode != "session" || len(cred.Session) < 40 {
-		localError(c, 400, "请提供有效的账号 Session，本通道不收集邮箱密码")
+	if json.Unmarshal(req.Credential, &cred) != nil || !((cred.Mode == "session" && len(strings.TrimSpace(cred.Session)) >= 40) || (cred.Mode == "access_token" && len(strings.TrimSpace(cred.AccessToken)) >= 40)) {
+		localError(c, 400, "请提供有效的完整 Session JSON 或 Access Token，本通道不收集邮箱密码")
 		return
 	}
 	cli := cardplatform.NewFromSettings()
