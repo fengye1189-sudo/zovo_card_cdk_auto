@@ -26,9 +26,9 @@ func CardPlatformWebhook(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	secret, _ := db.GetSetting("webhook_secret")
-	secret = strings.TrimSpace(secret)
-	if secret == "" {
+	secretSetting, _ := db.GetSetting("webhook_secret")
+	secrets := webhookSecrets(secretSetting)
+	if len(secrets) == 0 {
 		// 未配置密钥时拒绝，避免裸奔
 		log.Printf("webhook: webhook_secret not configured")
 		c.Status(http.StatusServiceUnavailable)
@@ -39,10 +39,17 @@ func CardPlatformWebhook(c *gin.Context) {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(raw)
-	expect := hex.EncodeToString(mac.Sum(nil))
-	if subtle.ConstantTimeCompare([]byte(strings.ToLower(got)), []byte(strings.ToLower(expect))) != 1 {
+	valid := false
+	for _, secret := range secrets {
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write(raw)
+		expect := hex.EncodeToString(mac.Sum(nil))
+		if subtle.ConstantTimeCompare([]byte(strings.ToLower(got)), []byte(strings.ToLower(expect))) == 1 {
+			valid = true
+			break
+		}
+	}
+	if !valid {
 		c.Status(http.StatusUnauthorized)
 		return
 	}
@@ -85,6 +92,23 @@ func CardPlatformWebhook(c *gin.Context) {
 		observeFromWebhookPayload(payload)
 	}
 	c.Status(http.StatusOK)
+}
+
+// webhookSecrets accepts one or more secrets separated by commas, semicolons,
+// whitespace, or newlines. This allows the generic Zovo callback and the
+// active API-key callback to coexist during key rotation without weakening
+// signature verification.
+func webhookSecrets(raw string) []string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t' || r == ' '
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if value := strings.TrimSpace(part); value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // applyCDKStatusFromWebhook 根据卡台终态回写本站 SQLite 中的 CDK status。
