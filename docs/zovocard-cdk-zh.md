@@ -228,3 +228,12 @@ curl "$CDK_SITE/api/v1/public/billing/check" -H 'Content-Type: application/json'
 成功响应 `data.status` 为 `cleared` 或 `pending`；`data.preflight`（如有）包含刷新后的账号状态和新 `preflight_token`。旧预检凭证已不可重复使用。只有确认原订阅已解除才显示可再次兑换；处理中或网络错误应重新检测，不能自动重发取消或自动兑换。正常有效订阅不支持此操作。这不是普通关闭自动续费，不消耗CDK、不创建订单。
 
 独立站浏览器使用本站 `/api/v1/public/cdk/recover-subscription` 转发同一请求；服务端不附加站点管理员API Key。部署顺序：ACC → 卡台 → 独立CDK站。
+
+
+## Pro 50x（2026-09）
+
+新增套餐键 `pro_50x`，上游套餐 `chatgptpromax`，高于20x。商城单笔/批量直充、OpenAPI建单、CDK发码/兑换均可用此键；`promax`为订阅状态别名，既有`pro`仍指20x。已有Go/Plus/5x/20x账号可查询升级报价并选择50x，已经50x不重复购买。升级报价随订阅周期变化，执行时不因新旧价格差异拦截；不确定支付仍只对账。
+
+PH采集的50x免税价为PHP 29,008.93（2,900,893最小单位），含税展示价PHP 32,490。真实扣款以账号账单为准，服务费及开关读取套餐注册表。50x升级/非PH注资使用独立上限（默认USD 1,000，可配置），其他套餐原有上限不变。
+
+CDK可在创建时使用 `plan: "pro_50x"`，品牌后缀为 `50X`。兑换仍沿用preview → preflight → redeem流程，指定卡参数规则不变；不需要为50x增加单独兑换接口。
