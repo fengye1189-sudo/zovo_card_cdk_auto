@@ -55,6 +55,17 @@ func automationBlocked() bool {
 	e = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','unknown','pending')").Scan(&n)
 	return e != nil || n > 0
 }
+
+// dedicatedMoneyBlocked reports only unresolved card-opening operations. A
+// stale top-up on another card must not stop a new dedicated-card order: the
+// rolling budget still includes its reserved amount, while card-specific
+// guards prevent touching that card again.
+func dedicatedMoneyBlocked() bool {
+	var n int
+	e := db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','unknown','pending') AND action IN ('open','pro_open')").Scan(&n)
+	return e != nil || n > 0
+}
+
 func validateAutomation(p automationPolicy) bool {
 	for _, n := range []int64{p.DailyBudget, p.MaxOperation, p.WalletFloor, p.Threshold, p.Target, p.CardCeiling, p.InitAmount, p.DailyOpen} {
 		if n < 0 || n > 100000000 {
@@ -524,7 +535,10 @@ func AdminAutomationStatus(c *gin.Context) {
 		}
 		rows.Close()
 	}
-	c.JSON(200, gin.H{"heartbeat": heartbeat, "alerts": alerts, "orders": watches, "operations": operations, "card_lifecycle": lifecycle, "product_stats": productStats, "blocked": automationBlocked()})
+	// The dashboard's blocked state reflects only unresolved card-opening
+	// operations. A top-up hold is scoped to its card and must not make the
+	// whole store appear unavailable.
+	c.JSON(200, gin.H{"heartbeat": heartbeat, "alerts": alerts, "orders": watches, "operations": operations, "card_lifecycle": lifecycle, "product_stats": productStats, "blocked": dedicatedMoneyBlocked()})
 }
 
 // Signed webhook delivery is only a wakeup hint. The worker confirms ownership and

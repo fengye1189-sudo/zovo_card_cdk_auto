@@ -101,7 +101,7 @@ func startProDedicated(c *gin.Context, r localCode, token, pf string, credential
 	result, e = tx.Exec(`INSERT INTO automation_money(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
  SELECT ?,'pro_open',0,?,?,0,?,'inflight',?
  WHERE COALESCE((SELECT SUM(reserved_minor) FROM automation_money WHERE created_at>?),0)+?<=?
- AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending'))
+ AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND action IN ('open','pro_open'))
  AND (SELECT COUNT(*) FROM automation_money WHERE action IN ('open','pro_open') AND created_at>?)<?`, request, initial, cost, scope, now, now-86400, cost, daily, now-86400, p.DailyOpen)
 	if e != nil {
 		localError(c, 503, "专卡预算预留失败，未开卡")

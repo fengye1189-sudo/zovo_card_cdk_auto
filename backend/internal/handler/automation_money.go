@@ -213,11 +213,16 @@ func maintainAutomationCards(ctx context.Context) {
 		return
 	}
 	verifyMoneyOperationsForScope(inventory, p, scope)
-	if uncertain > 0 {
+	if !dedicatedMoneyBlocked() {
+		// Clear the legacy global warning once no unresolved card-opening
+		// operation remains. Card-scoped top-up warnings are emitted separately.
+		autoResolve("money")
+	}
+	if uncertain > 0 && dedicatedMoneyBlocked() {
 		var remaining int
-		_ = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','unknown')").Scan(&remaining)
+		_ = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','unknown') AND action IN ('open','pro_open')").Scan(&remaining)
 		if remaining > 0 {
-			autoAlert("money", 0, "存在结果未确认的资金操作，已阻止新的资金操作与充值；请先在 Zovo 核对，本站不会自动重试。")
+			autoAlert("money", 0, "存在未确认的开卡资金操作，已暂停新的开卡；其他卡片的补款会按卡片范围继续核对。请先在 Zovo 核对，本站不会自动重试。")
 			return
 		}
 	}
@@ -226,10 +231,10 @@ func maintainAutomationCards(ctx context.Context) {
 	// A pending provider-accepted money operation is only reconciled in this
 	// cycle. Even when it is confirmed, defer any new funding decision until the
 	// next cycle so one delayed observation cannot trigger back-to-back spending.
-	if pending > 0 || uncertain > 0 {
+	if (pending > 0 || uncertain > 0) && dedicatedMoneyBlocked() {
 		return
 	}
-	if automationBlocked() {
+	if dedicatedMoneyBlocked() {
 		return
 	}
 	products, e := cli.AutomationProducts(ctx)
@@ -518,7 +523,7 @@ func maintainAutomationCards(ctx context.Context) {
 	r, e := tx.Exec(`INSERT INTO automation_money(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
  SELECT ?,?,?,?,?,?,?,'inflight',? WHERE ?<=? AND ?>0
  AND COALESCE((SELECT SUM(reserved_minor) FROM automation_money WHERE created_at>?),0)+?<=?
- AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending'))
+	 AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND action IN ('open','pro_open'))
 	 AND (?<>'open' OR (SELECT COUNT(*) FROM automation_money WHERE action IN ('open','pro_open','pro5x_reserve_open') AND created_at>?)<?)
  AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?)
  AND (?=0 OR NOT EXISTS(SELECT 1 FROM local_cdks WHERE card_id=? AND status IN ('reserved','review')))
@@ -558,7 +563,11 @@ func maintainAutomationCards(ctx context.Context) {
 	_, _ = db.DB.Exec("UPDATE automation_money SET state=?,result_card_id=? WHERE id=?", state, newCard, id)
 	db.WriteAudit("automation", "card_"+action, fmt.Sprintf("operation=%s card=%d product=%s selection=%s reserved_minor=%d result=%s", id, cardID, openProduct, selectionMode, cost, state), "")
 	if state == "unknown" {
-		autoAlert("money", 0, "资金操作结果不明，自动资金操作与新充值已暂停。请到 Zovo 核对；本站不会自动重试或返还预算。")
+		if action == "open" || action == "pro_open" {
+			autoAlert("money", 0, "开卡资金操作结果不明，新的开卡会暂停；其他卡片补款不受影响。请到 Zovo 核对，本站不会自动重试。")
+		} else {
+			autoAlert(fmt.Sprintf("money-card:%d", cardID), 0, fmt.Sprintf("卡片 #%d 补款结果不明，仅锁定该卡；其他卡片和新专卡订单不受影响。请到 Zovo 核对，本站不会自动重试。", cardID))
+		}
 	} else {
 		// A provider-accepted request is normal progress, not an exception. Its
 		// pending state remains visible in the operations table until the next
@@ -741,9 +750,17 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 					}
 				}
 				if !present {
-					autoAlert("money", 0, fmt.Sprintf("资金请求超过 30 分钟仍未找到成功流水；Zovo 当前卡片列表已不含卡片 ID #%d。该编号是历史内部 ID，不是卡号尾号；请在充值记录或资金流水核对，不会自动重试。", target))
+					key := "money"
+					if op.action == "topup" || op.action == "pro5x_reserve_topup" {
+						key = fmt.Sprintf("money-card:%d", target)
+					}
+					autoAlert(key, 0, fmt.Sprintf("资金请求超过 30 分钟仍未找到成功流水；Zovo 当前卡片列表已不含卡片 ID #%d。该编号是历史内部 ID，不是卡号尾号；请在充值记录或资金流水核对，不会自动重试。", target))
 				} else {
-					autoAlert("money", 0, "资金请求超过 30 分钟仍未核查到预期余额，请在 Zovo 充值记录或资金流水核对；不会自动重试。")
+					key := "money"
+					if op.action == "topup" || op.action == "pro5x_reserve_topup" {
+						key = fmt.Sprintf("money-card:%d", target)
+					}
+					autoAlert(key, 0, "资金请求超过 30 分钟仍未核查到预期余额，请在 Zovo 充值记录或资金流水核对；不会自动重试。")
 				}
 			}
 			continue

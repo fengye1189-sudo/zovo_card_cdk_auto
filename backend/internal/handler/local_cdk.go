@@ -680,10 +680,10 @@ func LocalCDKRedeem(c *gin.Context) {
 		localError(c, 409, "尚未提交充值：系统正在核对资金操作，请稍后重新验证；本次不会扣款，已有订单会继续查询")
 		return
 	}
-	// Dedicated products create/fund a card for this order and therefore still
-	// require the global money-operation lock. Existing-card products are only
-	// blocked by a hold on the exact card selected below.
-	if isProDedicatedPlan(r.Plan) && s.ProDedicatedEnabled && automationBlocked() {
+	// Dedicated products create/fund a card for this order. Only unresolved
+	// card-opening operations block here; a stale top-up on another card is
+	// scoped to that card and must not stop new customer orders.
+	if isProDedicatedPlan(r.Plan) && s.ProDedicatedEnabled && dedicatedMoneyBlocked() {
 		localError(c, 409, "尚未提交充值：专用卡资金操作正在核对，请稍后重新验证；本次不会扣款")
 		return
 	}
