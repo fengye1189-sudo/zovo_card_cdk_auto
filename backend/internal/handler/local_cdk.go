@@ -24,6 +24,12 @@ import (
 const mapleSupportURL = "https://t.me/fengye1189"
 
 func localHash(s string) string { h := sha256.Sum256([]byte(s)); return hex.EncodeToString(h[:]) }
+func localTruncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
 func localRandom() (string, error) {
 	b := make([]byte, 24)
 	_, e := rand.Read(b)
@@ -614,7 +620,7 @@ func LocalCDKPreflight(c *gin.Context) {
 		return
 	}
 	if pf.QuoteError != "" {
-		localError(c, 409, "账号未通过套餐资格预检："+truncate(pf.QuoteError, 160))
+		localError(c, 409, "账号未通过套餐资格预检："+localTruncate(pf.QuoteError, 160))
 		return
 	}
 	quote := pf.Quotes[upstreamPlan]
