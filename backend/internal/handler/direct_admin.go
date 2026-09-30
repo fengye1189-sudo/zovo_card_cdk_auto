@@ -87,6 +87,35 @@ func AdminDirectOrders(c *gin.Context) {
 			}
 		}
 	}
+	// Keep persisted observations visible after an API-key rotation. The
+	// upstream list is scoped to the current key, while this mirror contains
+	// read-only facts observed before the rotation (API sync or signed webhook).
+	if mirrors, err := db.ListDirectOrderMirrors(1000); err == nil {
+		for _, mirror := range mirrors {
+			id := mirror.UpstreamID
+			if id <= 0 || apiIDs[id] || seen[id] {
+				continue
+			}
+			seen[id] = true
+			order := cardplatform.PublicDirectOrder(map[string]any{
+				"id": id, "client_request_id": mirror.ClientRequestID,
+				"account_email": mirror.AccountEmail, "product": mirror.Product,
+				"plan": mirror.Plan, "status": mirror.Status, "stage": mirror.Stage,
+				"card_id": mirror.CardID, "card_last_four": mirror.CardLastFour,
+				"currency": mirror.Currency, "quoted_amount_minor": mirror.QuotedAmountMinor,
+				"final_amount_minor": mirror.FinalAmountMinor,
+				"renewal_status": mirror.RenewalStatus, "created_at": mirror.CreatedAt,
+				"updated_at": mirror.UpdatedAt, "completed_at": mirror.CompletedAt,
+			})
+			order["id"] = id
+			order["synced_only"] = true
+			order["source"] = "zovo_mirror"
+			synced = append(synced, order)
+			if len(synced) >= 1000 {
+				break
+			}
+		}
+	}
 	// The local redemption ledger is durable evidence for submitted upstream
 	// orders. It fills the historical gap left by API-key scoping and webhook
 	// events that only started arriving after the integration was configured.

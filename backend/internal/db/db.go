@@ -932,6 +932,68 @@ func ListLocalDirectOrderFacts(limit int) ([]LocalDirectOrderFact, error) {
 	return out, rows.Err()
 }
 
+// DirectOrderMirror is a read-only copy of an upstream direct order. It is
+// used to keep the admin order list complete when the upstream API key has
+// changed and the list endpoint no longer returns orders created by the old
+// key.
+type DirectOrderMirror struct {
+	UpstreamID             int64
+	ClientRequestID        string
+	AccountEmail           string
+	Product                string
+	Plan                   string
+	Status                 string
+	Stage                  string
+	CardID                 int64
+	CardLastFour           string
+	Currency               string
+	QuotedAmountMinor      int64
+	FinalAmountMinor       int64
+	RenewalStatus          string
+	CreatedAt              int64
+	UpdatedAt              int64
+	CompletedAt            int64
+	Source                 string
+}
+
+// ListDirectOrderMirrors returns persisted upstream order observations in
+// newest-first order. These rows are read-only evidence and must never be
+// used to submit a new upstream action.
+func ListDirectOrderMirrors(limit int) ([]DirectOrderMirror, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	rows, err := DB.Query(`
+		SELECT upstream_id,COALESCE(client_request_id,''),COALESCE(account_email,''),
+		       COALESCE(product,''),COALESCE(plan,''),COALESCE(status,''),COALESCE(stage,''),
+		       COALESCE(card_id,0),COALESCE(card_last_four,''),COALESCE(currency,''),
+		       COALESCE(quoted_amount_minor,0),COALESCE(final_amount_minor,0),
+		       COALESCE(renewal_status,''),COALESCE(created_at,0),COALESCE(updated_at,0),
+		       COALESCE(completed_at,0),COALESCE(source,'')
+		FROM zovo_direct_order_mirror
+		ORDER BY CASE WHEN completed_at>0 THEN completed_at ELSE created_at END DESC,
+		         upstream_id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []DirectOrderMirror{}
+	for rows.Next() {
+		var item DirectOrderMirror
+		if err := rows.Scan(&item.UpstreamID, &item.ClientRequestID, &item.AccountEmail,
+			&item.Product, &item.Plan, &item.Status, &item.Stage, &item.CardID,
+			&item.CardLastFour, &item.Currency, &item.QuotedAmountMinor,
+			&item.FinalAmountMinor, &item.RenewalStatus, &item.CreatedAt,
+			&item.UpdatedAt, &item.CompletedAt, &item.Source); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 func normalizeCDKCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }

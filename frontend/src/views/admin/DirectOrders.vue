@@ -12,7 +12,7 @@
       </div>
       <p class="text-sm text-muted">金额区分预估与最终金额；充值成功不代表已关闭续费，服务费状态也不等于卡片扣款状态。</p>
       <el-table :data="visibleRows" v-loading="loading" empty-text="暂无符合条件的订单；没有真实充值时，列表为空是正常的。" stripe>
-        <el-table-column label="账号 / 订单" min-width="210"><template #default="{row}"><div>{{ row.account_email || row.email || '上游未返回账号' }}</div><div class="text-sm text-muted">#{{ row.id }} · {{ row.client_request_id || '—' }}</div><el-tag v-if="row.source==='zovo_webhook'" size="small" type="info">Zovo 网页同步</el-tag><el-tag v-else-if="row.source==='cdk_redemption'" size="small" type="success">兑换记录同步</el-tag></template></el-table-column>
+      <el-table-column label="账号 / 订单" min-width="210"><template #default="{row}"><div>{{ row.account_email || row.email || '上游未返回账号' }}</div><div class="text-sm text-muted">#{{ row.id }} · {{ row.client_request_id || '—' }}</div><el-tag v-if="row.source==='zovo_webhook'" size="small" type="info">Zovo 网页同步</el-tag><el-tag v-else-if="row.source==='zovo_mirror'" size="small" type="warning">历史镜像同步</el-tag><el-tag v-else-if="row.source==='cdk_redemption'" size="small" type="success">兑换记录同步</el-tag></template></el-table-column>
         <el-table-column label="卡片 / 套餐" min-width="140"><template #default="{row}"><div>{{ row.card_last_four ? '•••• '+row.card_last_four : '尾号未返回' }}</div><div class="text-sm text-muted">{{ row.product || 'GPT' }} / {{ row.plan || '—' }}</div></template></el-table-column>
         <el-table-column label="充值状态" min-width="140"><template #default="{row}"><el-tag :type="tone(row.status)">{{ status(row.status) }}</el-tag><div class="text-sm text-muted mt-1">{{ row.stage || '' }}</div></template></el-table-column>
         <el-table-column label="金额" min-width="155"><template #default="{row}"><div>{{ money(row.final_amount_minor,row.currency) }}</div><div class="text-sm text-muted">预估 {{ money(row.quoted_amount_minor,row.currency) }}</div></template></el-table-column>
@@ -67,7 +67,7 @@ function newestFirst(a:Order,b:Order){
  if(Number.isFinite(timeDiff) && timeDiff!==0)return timeDiff
  return Number(b.id||0)-Number(a.id||0)
 }
-async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';try{const data=await api('?page='+next);rows.value=(next===1?[...(data.synced||[]),...data.list]:data.list).sort(newestFirst);apiTotal.value=Number(data.total||0);total.value=apiTotal.value+Number(data.synced_total||0);page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
+async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';try{const data=await api('?page='+next);const apiRows=Array.isArray(data.list)?data.list:[];const syncedRows=Array.isArray(data.synced)?data.synced:[];rows.value=(next===1?[...syncedRows,...apiRows]:apiRows).sort(newestFirst);apiTotal.value=Number(data.total||0);total.value=apiTotal.value+Number(data.synced_total||0);page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
 async function open(id:number){if(detailLoading.value)return;showDetail.value=true;detail.value=null;detailError.value='';detailLoading.value=true;try{detail.value=await api('/'+id)}catch(e:any){detailError.value=e.message}finally{detailLoading.value=false}}
 async function act(action:'cancel'|'cancel-renewal') {
  if(acting.value || !detail.value)return
