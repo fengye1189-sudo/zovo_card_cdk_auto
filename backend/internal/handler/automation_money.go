@@ -253,9 +253,9 @@ func maintainAutomationCards(ctx context.Context) {
 	if p.Retire && processQueuedCardRetirement(ctx, cli, inventory, scope, version, now) {
 		return
 	}
-	if maintainPro5xReserve(ctx, cli, inventory, p, version, scope, productMap, now) {
-		return
-	}
+	// Pro 5X is deliberately on-demand. Do not keep a dedicated card funded or
+	// logically reserved between orders; the redemption request opens and funds
+	// a card only when needed. This avoids idle holds and stale reserve states.
 	if (!p.Topup && !p.Open) || !readLocalSettings().Enabled {
 		return
 	}

@@ -31,10 +31,6 @@ func proDedicatedName(plan string) string {
 }
 
 func startProDedicated(c *gin.Context, r localCode, token, pf string, credential json.RawMessage, s localSettings, p automationPolicy, policyVersion, fee int64) {
-	if r.Plan == "pro_5x" {
-		startPreparedPro5x(c, r, token, pf, credential, s, p, policyVersion, fee)
-		return
-	}
 	cli := cardplatform.NewFromSettings()
 	initial, name := proDedicatedInitialMinor(r.Plan), proDedicatedName(r.Plan)
 	if !p.Sync || !p.Open || p.Paused || p.First == "" || p.Last == "" || p.DailyBudget <= 0 || p.DailyOpen <= 0 || fee < 0 || fee > 50 {
