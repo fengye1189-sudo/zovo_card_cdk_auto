@@ -592,7 +592,10 @@ func LocalCDKPreflight(c *gin.Context) {
 	}
 	raw, e := cli.DirectPreflight(c.Request.Context(), gin.H{"product": "gpt", "credential": req.Credential, "payment_country": country, "payment_currency": currency})
 	if e != nil {
-		localError(c, 502, "账号预检失败，请检查账号信息或联系商家")
+		// Preserve the upstream's safe business reason (without echoing the
+		// Session) so an expired/ineligible account can be corrected instead of
+		// being mistaken for a card or funds problem.
+		writeCardErr(c, e)
 		return
 	}
 	var pf struct {
@@ -606,8 +609,12 @@ func LocalCDKPreflight(c *gin.Context) {
 			Currency string `json:"currency"`
 		} `json:"quotes"`
 	}
-	if json.Unmarshal(raw, &pf) != nil || pf.Token == "" || pf.Email == "" || pf.QuoteError != "" {
+	if json.Unmarshal(raw, &pf) != nil || pf.Token == "" || pf.Email == "" {
 		localError(c, 502, "账号或报价信息不完整，尚未提交充值")
+		return
+	}
+	if pf.QuoteError != "" {
+		localError(c, 409, "账号未通过套餐资格预检："+truncate(pf.QuoteError, 160))
 		return
 	}
 	quote := pf.Quotes[upstreamPlan]
