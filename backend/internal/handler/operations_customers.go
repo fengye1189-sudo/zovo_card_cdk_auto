@@ -76,6 +76,19 @@ type marketplaceCustomerRecord struct {
 	Plan         string `json:"plan"`
 }
 
+// Only these sources carry an explicit, auditable customer association. A
+// time/plan similarity is useful for manual review, but must never populate a
+// buyer, Telegram account, or reminder channel because it can point at another
+// customer with the same product and a nearby activation time.
+func customerIdentityIsExplicit(source string) bool {
+	switch strings.TrimSpace(source) {
+	case "marketplace_order", "upgrade_email_match", "legacy_order_email_match":
+		return true
+	default:
+		return false
+	}
+}
+
 const operationsCustomerCurrentCTE = `WITH all_customer_completions AS (
 	SELECT l.id,LOWER(TRIM(l.email)) AS account_key,TRIM(l.email) AS email,l.plan,
 	       l.upgrade_type,l.activated_at,l.subscription_expires_at,l.expiry_estimated,
@@ -442,7 +455,7 @@ func OperationsCustomersSearch(c *gin.Context) {
 					}
 				}
 			}
-			if ok {
+			if ok && customerIdentityIsExplicit(identity.Source) {
 				list[i].BuyerName = identity.BuyerName
 				list[i].BuyerEmail = identity.BuyerEmail
 				list[i].TelegramID = identity.TelegramID
@@ -457,18 +470,28 @@ func OperationsCustomersSearch(c *gin.Context) {
 				} else {
 					list[i].ReminderChannel = "UPGRADE_EMAIL"
 				}
+			} else if ok {
+				// Keep the evidence label for manual review, but discard the
+				// guessed person's private fields and disable reminders.
+				list[i].IdentitySource = identity.Source
+				list[i].IdentityConfidence = identity.Confidence
+				list[i].IdentityEvidence = identity.Evidence
+				list[i].BuyerName = ""
+				list[i].BuyerEmail = ""
+				list[i].TelegramID = ""
+				list[i].TelegramUsername = ""
+				list[i].ReminderReady = false
+				list[i].ReminderChannel = ""
 			}
 		}
 	}
 	for i := range list {
 		if list[i].IdentitySource == "" {
-			list[i].BuyerName = "升级账号本人"
-			list[i].BuyerEmail = list[i].Email
 			list[i].IdentitySource = "upgrade_email_inferred"
 			list[i].IdentityConfidence = 35
-			list[i].IdentityEvidence = "仅有升级邮箱，尚未找到商城订单、下单邮箱或 Telegram 的明确对应关系"
-			list[i].ReminderReady = true
-			list[i].ReminderChannel = "UPGRADE_EMAIL"
+			list[i].IdentityEvidence = "仅有升级邮箱，未找到商城订单、下单邮箱或 Telegram 的明确对应关系；禁止按推测绑定客户"
+			list[i].ReminderReady = false
+			list[i].ReminderChannel = ""
 		}
 	}
 

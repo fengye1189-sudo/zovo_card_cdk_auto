@@ -60,7 +60,7 @@
           <p>购买人：{{ row.buyer_name || '未记录' }} <span class="text-xs text-muted">{{ identityLabel(row) }}</span></p>
           <p class="text-xs text-muted">依据：{{ row.identity_evidence || '暂无' }} · 可信度 {{ row.identity_confidence || 0 }}%</p>
           <p :class="row.reminder_ready ? 'text-success' : 'text-warn'">{{ reminderLabel(row) }}</p>
-          <p class="break-all">联系邮箱：{{ row.buyer_email || row.email }} <span class="text-xs text-muted">{{ identityLabel(row) }}</span></p>
+          <p class="break-all">联系邮箱：{{ row.buyer_email || '未核对' }} <span class="text-xs text-muted">{{ identityLabel(row) }}</span></p>
           <p>纸飞机：<a v-if="telegramLink(row)" class="text-primary" :href="telegramLink(row)">{{ telegramLabel(row) }}</a><span v-else>未绑定</span><span v-if="row.telegram_id"> · ID {{ row.telegram_id }}</span></p>
           <p>开通：{{ date(row.activated_at) }}</p>
           <p>{{ row.expiry_estimated ? '预计到期' : '到期' }}：{{ date(row.subscription_expires_at) }}</p>
@@ -75,7 +75,7 @@
             <td class="py-4 pr-4 font-mono break-all">{{ row.email }}</td>
             <td class="pr-4">{{ row.buyer_name || '未记录' }}<br /><span class="text-xs text-muted">{{ identityLabel(row) }} · {{ row.identity_confidence || 0 }}%</span><br /><span class="text-xs text-muted">{{ row.identity_evidence }}</span><br /><span :class="row.reminder_ready ? 'text-success text-xs' : 'text-warn text-xs'">{{ reminderLabel(row) }}</span></td>
             <td class="pr-4 whitespace-nowrap"><a v-if="telegramLink(row)" class="text-primary" :href="telegramLink(row)">{{ telegramLabel(row) }}</a><span v-else>未绑定</span><br /><span v-if="row.telegram_id" class="text-xs text-muted">ID {{ row.telegram_id }}</span></td>
-            <td class="pr-4 font-mono break-all">{{ row.buyer_email || row.email }}<br /><span class="text-xs text-muted">{{ identityLabel(row) }}</span></td>
+            <td class="pr-4 font-mono break-all">{{ row.buyer_email || '未核对' }}<br /><span class="text-xs text-muted">{{ identityLabel(row) }}</span></td>
             <td class="pr-4">{{ row.upgrade_type || planLabel(row.plan) }}</td>
             <td class="pr-4 whitespace-nowrap">开通 {{ date(row.activated_at) }}<br />{{ row.expiry_estimated ? '预计到期' : '到期' }} {{ date(row.subscription_expires_at) }}</td>
             <td class="pr-4 whitespace-nowrap" :class="remainingTone(row)">{{ remaining(row) }}</td>
