@@ -181,7 +181,7 @@ function telegramLink(row: Customer) {
 }
 
 function identityLabel(row: Customer) {
-  return ({ marketplace_order: '商城订单确认', upgrade_email_match: '升级邮箱匹配商城账号', legacy_order_email_match: '历史下单邮箱确认', time_plan_match: '同套餐与时间推定', upgrade_email_inferred: '按升级邮箱推定' } as Record<string, string>)[row.identity_source] || ''
+  return ({ marketplace_order: '商城订单确认', upgrade_email_match: '升级邮箱匹配商城账号', legacy_order_email_match: '历史下单邮箱确认', time_plan_match: '旧版时间候选（待核对）', handle_time_candidate: '用户名与时间候选（待核对）', upgrade_email_inferred: '仅有升级邮箱（待核对）' } as Record<string, string>)[row.identity_source] || ''
 }
 
 function reminderLabel(row: Customer) {
