@@ -143,6 +143,8 @@ func notificationAlertKind(key string) string {
 		return "订单状态核查"
 	case strings.HasPrefix(key, "renewal:"):
 		return "自动续费未取消"
+	case strings.HasPrefix(key, "card-renewal:"):
+		return "卡片临近续费"
 	case strings.HasPrefix(key, "pro:") || key == "pro_restart":
 		return "Pro 专卡处理"
 	case strings.HasPrefix(key, "retire:"):
@@ -174,6 +176,9 @@ func notificationAlertObject(key string, localID int64) string {
 		return fmt.Sprintf("支付卡 #%d", id)
 	}
 	if id, ok := parseSuffix("retire:"); ok {
+		return fmt.Sprintf("支付卡 #%d", id)
+	}
+	if id, ok := parseSuffix("card-renewal:"); ok {
 		return fmt.Sprintf("支付卡 #%d", id)
 	}
 	if id, ok := parseSuffix("finance-card:"); ok {
@@ -208,6 +213,8 @@ func notificationAlertHandling(key string) string {
 		return "该订单只继续查单，不会重复付款；上游状态恢复一致后自动解除提醒。"
 	case strings.HasPrefix(key, "renewal:"):
 		return "保留已经确认的会员结果，只核查续费关闭状态，不重复付款。"
+	case strings.HasPrefix(key, "card-renewal:"):
+		return "卡片保持可支付；系统不会自动补款，等待管理员确认是否继续使用。"
 	case strings.HasPrefix(key, "pro:") || key == "pro_restart":
 		return "订单保留在待核对状态；结果不明的开卡或付款不会自动重试。"
 	case strings.HasPrefix(key, "retire:"):

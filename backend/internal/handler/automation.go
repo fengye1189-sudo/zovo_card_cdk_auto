@@ -231,6 +231,7 @@ func runAutomationCycle(ctx context.Context) {
 		watchOrder(checkCtx, id)
 		cancel()
 	}
+	maintainCardRenewalAlerts(now)
 	if ctx.Err() == nil {
 		moneyCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		maintainAutomationCards(moneyCtx)

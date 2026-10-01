@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -69,6 +70,69 @@ const automationReadyCardFloor = 2
 // Keep a small funded working set. Other selected cards remain available for
 // rotation, but are only topped up when the working set drops below two.
 const automationFundedCardTarget = 2
+
+const (
+	cardRenewalReminderWindow = 72 * time.Hour
+	cardPostChargeTopupDelay  = 24 * time.Hour
+)
+
+type cardRenewalState struct {
+	nextDue       int64
+	lastActivated int64
+}
+
+func loadCardRenewalStates(inventory []cardplatform.CardChoice, now int64) map[int64]cardRenewalState {
+	states := make(map[int64]cardRenewalState, len(inventory))
+	for _, card := range inventory {
+		var state cardRenewalState
+		_ = db.DB.QueryRow(`SELECT COALESCE(MIN(CASE WHEN subscription_expires_at>? THEN subscription_expires_at ELSE 0 END),0),
+			COALESCE(MAX(activated_at),0) FROM local_cdks
+			WHERE card_id=? AND status='consumed' AND subscription_expires_at>?`, now, card.ID, now).
+			Scan(&state.nextDue, &state.lastActivated)
+		states[card.ID] = state
+	}
+	return states
+}
+
+// Cards close to a known subscription renewal remain usable, but funding is
+// held for an explicit owner decision. Missing cards do not produce reminders.
+func maintainCardRenewalAlerts(now int64) {
+	scopeCfg := cardplatform.LoadConfig()
+	scope := localHash(scopeCfg.SiteBase + "|" + scopeCfg.APIKey)
+	rows, err := db.DB.Query(`SELECT c.card_id,MIN(c.subscription_expires_at),COUNT(*),
+		COALESCE(GROUP_CONCAT(NULLIF(c.email,''),', '),'')
+		FROM local_cdks c
+		JOIN automation_inventory_snapshot s ON s.scope=? AND s.card_id=c.card_id AND s.present=1
+		JOIN automation_card_lifecycle l ON l.card_id=c.card_id AND l.retire_state='active'
+		WHERE c.status='consumed' AND c.card_id>0 AND c.subscription_expires_at>? AND c.subscription_expires_at<=?
+		GROUP BY c.card_id`, scope, now, now+int64(cardRenewalReminderWindow/time.Second))
+	if err != nil {
+		return
+	}
+	active := map[string]bool{}
+	for rows.Next() {
+		var cardID, due, count int64
+		var emails string
+		if rows.Scan(&cardID, &due, &count, &emails) != nil {
+			continue
+		}
+		key := fmt.Sprintf("card-renewal:%d", cardID)
+		active[key] = true
+		autoAlert(key, 0, fmt.Sprintf("支付卡 #%d 有 %d 个客户将在约 %s 内到期（%s）；卡片仍保持可支付，请确认是否补款并继续使用。", cardID, count, time.Until(time.Unix(due, 0)).Round(time.Hour), emails))
+	}
+	rows.Close()
+	rows, err = db.DB.Query("SELECT alert_key FROM automation_alerts WHERE alert_key LIKE 'card-renewal:%' AND resolved=0")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if rows.Scan(&key) == nil && !active[key] {
+			autoResolve(key)
+		}
+	}
+}
 
 func shouldOpenAutomationCard(ready int) bool {
 	return ready < automationReadyCardFloor
@@ -216,6 +280,7 @@ func maintainAutomationCards(ctx context.Context) {
 	if e != nil {
 		return
 	}
+	renewalStates := loadCardRenewalStates(inventory, now)
 	verifyMoneyOperationsForScope(inventory, p, scope)
 	if !dedicatedMoneyBlocked() {
 		// Clear the legacy global warning once no unresolved card-opening
@@ -388,7 +453,26 @@ func maintainAutomationCards(ctx context.Context) {
 		// ready, leave the rest low and replenish them only when a working slot
 		// becomes necessary.
 		if len(ready) < automationFundedCardTarget {
+			// Health-first order: cards without a scheduled renewal, then cards
+			// whose next renewal is farthest away.
+			sort.SliceStable(inventory, func(i, j int) bool {
+				left, right := renewalStates[inventory[i].ID], renewalStates[inventory[j].ID]
+				if left.nextDue == 0 {
+					return right.nextDue != 0
+				}
+				if right.nextDue == 0 {
+					return false
+				}
+				return left.nextDue > right.nextDue
+			})
 			for _, card := range inventory {
+				state := renewalStates[card.ID]
+				if state.lastActivated > 0 && now-state.lastActivated < int64(cardPostChargeTopupDelay/time.Second) {
+					continue
+				}
+				if state.nextDue > now && state.nextDue-now <= int64(cardRenewalReminderWindow/time.Second) {
+					continue
+				}
 			var reserveID int64
 			var reserveState string
 			if err := db.DB.QueryRow("SELECT card_id,state FROM pro5x_card_reserve WHERE id=1").Scan(&reserveID, &reserveState); err == nil && reserveID == card.ID && reserveState != "empty" {
