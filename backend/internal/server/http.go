@@ -279,6 +279,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/automation/notifications", handler.AdminNotificationSettings)
 			admin.PUT("/automation/notifications", handler.AdminNotificationSave)
 			admin.POST("/automation/notifications/test", handler.AdminNotificationTest)
+			admin.POST("/automation/notifications/retry-unknown", handler.AdminNotificationRetryUnknown)
 			admin.GET("/direct-orders/:id", handler.AdminDirectDetail)
 			admin.POST("/direct-orders/:id/:action", handler.AdminDirectAction)
 			admin.GET("/local-card-choices", handler.LocalCardChoices)

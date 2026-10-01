@@ -84,6 +84,43 @@ func AdminNotificationSettings(c *gin.Context) {
 	rows.Close()
 	c.JSON(200, gin.H{"settings": p, "version": v, "secret_configured": has, "records": list})
 }
+
+// AdminNotificationRetryUnknown moves one explicitly selected, result-unknown
+// notification back to the current outbox. It is intentionally manual: a
+// network timeout may have reached Telegram/Resend, so automatic replay could
+// deliver a duplicate message.
+func AdminNotificationRetryUnknown(c *gin.Context) {
+	var req struct {
+		ID        string `json:"id"`
+		Confirmed bool   `json:"confirmed"`
+	}
+	if !localBody(c, &req) {
+		return
+	}
+	if !req.Confirmed || strings.TrimSpace(req.ID) == "" {
+		localError(c, 400, "请指定通知记录并确认后重试")
+		return
+	}
+	_, version, err := readNotificationConfig()
+	if err != nil {
+		localError(c, 503, "通知设置暂不可用")
+		return
+	}
+	now := time.Now().Unix()
+	r, err := db.DB.Exec(`UPDATE notification_outbox
+		SET state='pending', attempts=0, next_run=?, updated_at=?, error='管理员确认重新发送'
+		WHERE id=? AND state='unknown' AND config_version=?`, now, now, strings.TrimSpace(req.ID), version)
+	if err != nil {
+		localError(c, 503, "通知重试状态保存失败")
+		return
+	}
+	if n, _ := r.RowsAffected(); n != 1 {
+		localError(c, 409, "该通知不是当前配置下的结果不明记录，可能已处理或已变更")
+		return
+	}
+	db.WriteAudit(c.GetString("username"), "notification_retry_unknown", "id="+strings.TrimSpace(req.ID), c.ClientIP())
+	c.JSON(200, gin.H{"ok": true, "id": strings.TrimSpace(req.ID), "message": "已加入发送队列，将在下一轮发送"})
+}
 func AdminNotificationSave(c *gin.Context) {
 	var req struct {
 		Settings  notificationConfig `json:"settings"`
