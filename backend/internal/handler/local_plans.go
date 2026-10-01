@@ -57,7 +57,9 @@ func localCodeLabel(plan string) string {
 	}
 }
 
-func isProDedicatedPlan(plan string) bool { return plan == "pro_5x" || plan == "pro_20x" }
+func isPro5xDedicatedPlan(plan string) bool { return plan == "pro_5x" || plan == "pro_5x_cl" }
+
+func isProDedicatedPlan(plan string) bool { return isPro5xDedicatedPlan(plan) || plan == "pro_20x" }
 
 // Owner-authorized per-plan subscription caps, in PHP centavos. These do not
 // increase card topups, opening amounts or daily automation budgets.

@@ -134,11 +134,10 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	if err != nil || reserve.State != "empty" {
 		return false
 	}
-	// A newly governed 5X card stays dedicated for three successful 5X
-	// upgrades. Between uses, refill the same card to $100 instead of opening a
-	// replacement or releasing it into the Plus pool.
+	// Reuse the most recently completed Pro 5X card as the single shared
+	// Philippines/Chile reserve. All older Pro 5X cards remain ordinary cards.
 	rows, err := db.DB.Query(`SELECT card_id FROM pro5x_card_policy
-		WHERE completed_uses>0 AND completed_uses<? ORDER BY updated_at DESC,card_id`, pro5xUsesBeforePlusPool)
+		WHERE completed_uses>0 ORDER BY updated_at DESC,card_id LIMIT 1`)
 	if err != nil {
 		return false
 	}

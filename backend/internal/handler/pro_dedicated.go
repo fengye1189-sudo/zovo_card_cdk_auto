@@ -17,20 +17,26 @@ const pro5xInitialMinor int64 = 10000
 const proDailyMaximum int64 = 200000
 
 func proDedicatedInitialMinor(plan string) int64 {
-	if plan == "pro_5x" {
+	if isPro5xDedicatedPlan(plan) {
 		return pro5xInitialMinor
 	}
 	return proInitialMinor
 }
 
 func proDedicatedName(plan string) string {
-	if plan == "pro_5x" {
+	if isPro5xDedicatedPlan(plan) {
 		return "Pro 5X"
 	}
 	return "Pro 20X"
 }
 
 func startProDedicated(c *gin.Context, r localCode, token, pf string, credential json.RawMessage, s localSettings, p automationPolicy, policyVersion, fee int64) {
+	// Philippines and Chile Pro 5X orders share one verified reserve card.
+	// The reserve is claimed transactionally and replenished before the next order.
+	if isPro5xDedicatedPlan(r.Plan) {
+		startPreparedPro5x(c, r, token, pf, credential, s, p, policyVersion, fee)
+		return
+	}
 	cli := cardplatform.NewFromSettings()
 	initial, name := proDedicatedInitialMinor(r.Plan), proDedicatedName(r.Plan)
 	if !p.Sync || !p.Open || p.Paused || p.First == "" || p.Last == "" || p.DailyBudget <= 0 || p.DailyOpen <= 0 || fee < 0 || fee > 50 {

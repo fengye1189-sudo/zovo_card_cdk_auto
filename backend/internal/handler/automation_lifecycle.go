@@ -134,9 +134,9 @@ func recordAutomationDecline(localID, cardID int64, accountEmail, upstreamState 
 	}
 	if inserted == 1 {
 		_, err = tx.Exec(`UPDATE automation_card_lifecycle SET
-		 decline_count=(SELECT COUNT(*) FROM automation_card_declines WHERE card_id=?),
-		 retire_state=CASE WHEN retire_state='active' AND (SELECT COUNT(*) FROM automation_card_declines WHERE card_id=?)>=2 THEN 'queued' ELSE retire_state END,
-		 retire_reason=CASE WHEN retire_state='active' AND (SELECT COUNT(*) FROM automation_card_declines WHERE card_id=?)>=2 THEN 'two_declines' ELSE retire_reason END,
+			 decline_count=(SELECT COUNT(DISTINCT NULLIF(email_norm,'')) FROM automation_card_declines WHERE card_id=?),
+			 retire_state=CASE WHEN retire_state='active' AND (SELECT COUNT(DISTINCT NULLIF(email_norm,'')) FROM automation_card_declines WHERE card_id=?)>=2 THEN 'queued' ELSE retire_state END,
+			 retire_reason=CASE WHEN retire_state='active' AND (SELECT COUNT(DISTINCT NULLIF(email_norm,'')) FROM automation_card_declines WHERE card_id=?)>=2 THEN 'two_declines' ELSE retire_reason END,
 		 updated_at=? WHERE card_id=?`, cardID, cardID, cardID, now, cardID)
 		if err != nil {
 			return err

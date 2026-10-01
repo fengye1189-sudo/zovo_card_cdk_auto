@@ -79,6 +79,7 @@ func CardPlatformPlans(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"version": plans.Version,
 		"plans":   m,
+		"payment_regions": plans.PaymentRegions,
 		"base":    cardplatform.LoadConfig().SiteBase,
 		// 展示顺序/文案/性质仍以卡台注册表为准，前端不维护档位清单
 		"registry": sellable,
@@ -103,6 +104,7 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 		Plan             string `json:"plan"`
 		Count            int    `json:"count"`
 		FundingConfirmed bool   `json:"funding_confirmed"`
+		PaymentCountry   string `json:"payment_country"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -163,7 +165,12 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	// 本站选卡配置 → 发码偏好（跳过未启动卡头；ch1 等历史写法会归一成 one）
 	var issuePrefs []cardplatform.IssueCardPref
 	if pref, ok := issuePrefFromSite(); ok {
+		if strings.TrimSpace(req.PaymentCountry) != "" {
+			pref.PaymentCountry = strings.ToUpper(strings.TrimSpace(req.PaymentCountry))
+		}
 		issuePrefs = append(issuePrefs, pref)
+	} else if strings.TrimSpace(req.PaymentCountry) != "" {
+		issuePrefs = append(issuePrefs, cardplatform.IssueCardPref{PaymentCountry: strings.ToUpper(strings.TrimSpace(req.PaymentCountry))})
 	}
 	var res *cardplatform.IssueCDKResult
 	var err error
@@ -1679,6 +1686,7 @@ func PublicCDKPlans(c *gin.Context) {
 			"source":   "docs_default",
 			"plans":    docsDefaultPlans(),
 			"registry": docsDefaultRegistry(),
+			"payment_regions": []cardplatform.PaymentRegion{},
 			"note":     docsDefaultNote,
 		})
 		return
@@ -1692,6 +1700,7 @@ func PublicCDKPlans(c *gin.Context) {
 			"error":    err.Error(),
 			"plans":    docsDefaultPlans(),
 			"registry": docsDefaultRegistry(),
+			"payment_regions": []cardplatform.PaymentRegion{},
 			"note":     docsDefaultNote,
 		})
 		return
@@ -1707,6 +1716,7 @@ func PublicCDKPlans(c *gin.Context) {
 		"version": plans.Version,
 		"source":  "cardplatform_live",
 		"plans":   m,
+		"payment_regions": plans.PaymentRegions,
 		// 档位展示顺序/文案/性质：前端据此渲染，不再维护自己的档位清单
 		"registry": sellable,
 	})

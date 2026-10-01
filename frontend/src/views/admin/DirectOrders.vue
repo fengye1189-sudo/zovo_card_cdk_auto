@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-4">
     <div class="flex flex-wrap justify-between items-center gap-3">
-      <div><h1 class="text-2xl font-bold text-ink">充值订单</h1><p class="text-sm text-muted mt-2">汇总当前 API 账号订单、Zovo 网页回调和本站兑换记录；历史来源只读，不会重复提交充值。</p></div>
+      <div><h1 class="text-2xl font-bold text-ink">充值订单</h1><p class="text-sm text-muted mt-2">汇总 API、Zovo 回调、本站兑换记录和现金发卡订单；同步来源只读，不会重复提交充值。</p></div>
       <el-button :loading="loading" :disabled="acting" @click="load(page)">刷新订单</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
@@ -12,8 +12,8 @@
       </div>
       <p class="text-sm text-muted">金额区分预估与最终金额；充值成功不代表已关闭续费，服务费状态也不等于卡片扣款状态。</p>
       <el-table :data="visibleRows" v-loading="loading" empty-text="暂无符合条件的订单；没有真实充值时，列表为空是正常的。" stripe>
-      <el-table-column label="账号 / 订单" min-width="210"><template #default="{row}"><div>{{ row.account_email || row.email || '上游未返回账号' }}</div><div class="text-sm text-muted">#{{ row.id }} · {{ row.client_request_id || '—' }}</div><el-tag v-if="row.source==='zovo_webhook'" size="small" type="info">Zovo 网页同步</el-tag><el-tag v-else-if="row.source==='zovo_mirror'" size="small" type="warning">历史镜像同步</el-tag><el-tag v-else-if="row.source==='cdk_redemption'" size="small" type="success">兑换记录同步</el-tag></template></el-table-column>
-        <el-table-column label="卡片 / 套餐" min-width="140"><template #default="{row}"><div>{{ row.card_last_four ? '•••• '+row.card_last_four : '尾号未返回' }}</div><div class="text-sm text-muted">{{ row.product || 'GPT' }} / {{ row.plan || '—' }}</div></template></el-table-column>
+      <el-table-column label="账号 / 订单" min-width="210"><template #default="{row}"><div>{{ row.account_email || row.email || '上游未返回账号' }}</div><div class="text-sm text-muted">{{ row.cash_order ? row.id : '#'+row.id }} · {{ row.client_request_id || '—' }}</div><el-tag v-if="row.source==='cash_delivery'" size="small" type="success">现金发卡同步</el-tag><el-tag v-else-if="row.source==='zovo_webhook'" size="small" type="info">Zovo 网页同步</el-tag><el-tag v-else-if="row.source==='zovo_mirror'" size="small" type="warning">历史镜像同步</el-tag><el-tag v-else-if="row.source==='cdk_redemption'" size="small" type="success">兑换记录同步</el-tag></template></el-table-column>
+        <el-table-column label="卡片 / 套餐" min-width="170"><template #default="{row}"><div>{{ row.cash_order ? '现金交付' : (row.card_last_four ? '•••• '+row.card_last_four : '尾号未返回') }}</div><div class="text-sm text-muted">{{ row.product_title || row.product || 'GPT' }} / {{ row.plan || '—' }}</div><div v-if="row.cash_order" class="text-sm text-muted">{{ row.cash_fulfillment_source === 'INTERNAL_STOCK' ? '自有库存' : '自动采购' }}</div></template></el-table-column>
         <el-table-column label="充值状态" min-width="140"><template #default="{row}"><el-tag :type="tone(row.status)">{{ status(row.status) }}</el-tag><div class="text-sm text-muted mt-1">{{ row.stage || '' }}</div></template></el-table-column>
         <el-table-column label="金额" min-width="155"><template #default="{row}"><div>{{ money(row.final_amount_minor,row.currency) }}</div><div class="text-sm text-muted">预估 {{ money(row.quoted_amount_minor,row.currency) }}</div></template></el-table-column>
         <el-table-column label="自动续费" min-width="140"><template #default="{row}"><el-tag :type="row.renewal_status==='success'?'success':'info'">{{ renewal(row.renewal_status) }}</el-tag></template></el-table-column>

@@ -23,26 +23,31 @@ func randomOrdinaryCardLimit() (int, error) {
 	return localCardUnlimitedLimit, nil
 }
 
-// localCardKind distinguishes newly opened Pro cards from ordinary configured
-// cards. Any Pro association that is not authoritatively completed remains
-// isolated, even if an old settings draft still contains that card ID.
+// localCardKind keeps only the currently claimed shared Pro 5X reserve out of
+// the ordinary pool. Historical Pro 5X cards are ordinary Plus/PULS cards.
 func localCardKind(cardID int64, configured bool) (string, bool, error) {
-	var pro5xUses int
-	err := db.DB.QueryRow("SELECT completed_uses FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&pro5xUses)
-	if err == nil {
-		if pro5xUses < pro5xUsesBeforePlusPool {
-			return "", false, nil
-		}
-		return "ordinary", true, nil
-	}
-	if err != sql.ErrNoRows {
+	var reserveID int64
+	var reserveState string
+	if err := db.DB.QueryRow("SELECT card_id,state FROM pro5x_card_reserve WHERE id=1").Scan(&reserveID, &reserveState); err != nil && err != sql.ErrNoRows {
 		return "", false, err
 	}
+	if reserveID == cardID && reserveState != "" && reserveState != "empty" {
+		return "", false, nil
+	}
+	err := sql.ErrNoRows
 	var state, plan, status string
 	err = db.DB.QueryRow(`SELECT p.state,COALESCE(c.plan,''),COALESCE(c.status,'')
 	 FROM pro_dedicated_orders p LEFT JOIN local_cdks c ON c.id=p.local_id
 	 WHERE p.card_id=?`, cardID).Scan(&state, &plan, &status)
 	if err == sql.ErrNoRows {
+		// A completed Pro 5X order deliberately releases its dedicated-order
+		// card_id. The durable pro5x_card_policy row is then the authoritative
+		// proof that this physical card has completed a Pro 5X use and may join
+		// the ordinary shared pool.
+		var policyCardID int64
+		if policyErr := db.DB.QueryRow("SELECT card_id FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&policyCardID); policyErr == nil && policyCardID == cardID {
+			return "ordinary", true, nil
+		}
 		if configured {
 			return "ordinary", true, nil
 		}
@@ -52,7 +57,7 @@ func localCardKind(cardID int64, configured bool) (string, bool, error) {
 		return "", false, err
 	}
 	if isProDedicatedPlan(plan) && status == "consumed" && (state == "submitted" || state == "completed") {
-		if plan == "pro_5x" {
+		if isPro5xDedicatedPlan(plan) {
 			return "ordinary", true, nil
 		}
 		return "pro", true, nil
@@ -121,7 +126,7 @@ func localPoolCards(s localSettings, now int64) ([]int64, map[int64]string, erro
 	rows, err := db.DB.Query(`SELECT p.card_id
 	 FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
 	 WHERE p.card_id>0 AND p.state IN ('submitted','completed')
-	 AND c.plan IN ('pro_5x','pro_20x') AND c.status='consumed' ORDER BY p.local_id`)
+	 AND c.plan IN ('pro_5x','pro_5x_cl','pro5x','pro_20x') AND c.status='consumed' ORDER BY p.local_id`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -139,7 +144,7 @@ func localPoolCards(s localSettings, now int64) ([]int64, map[int64]string, erro
 		return nil, nil, err
 	}
 	rows, err = db.DB.Query(`SELECT card_id FROM pro5x_card_policy
-	 WHERE completed_uses>=? ORDER BY updated_at,card_id`, pro5xUsesBeforePlusPool)
+	 ORDER BY updated_at,card_id`)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -295,7 +300,7 @@ func recordAuthoritativeLocalStatusWithCompletion(localID int64, state, message,
 		}
 		if state == "consumed" && cardID > 0 {
 			kind, limit := "pro", localCardUnlimitedLimit
-			if plan == "pro_5x" {
+			if isPro5xDedicatedPlan(plan) {
 				if _, err = tx.Exec(`INSERT INTO pro5x_card_policy(card_id,completed_uses,created_at,updated_at)
 				 VALUES(?,1,?,?) ON CONFLICT(card_id) DO UPDATE SET
 				 completed_uses=pro5x_card_policy.completed_uses+1,updated_at=excluded.updated_at`, cardID, now, now); err != nil {
@@ -310,9 +315,6 @@ func recordAuthoritativeLocalStatusWithCompletion(localID int64, state, message,
 				// immutable usage history.
 				if _, err = tx.Exec("UPDATE pro_dedicated_orders SET card_id=NULL WHERE local_id=? AND state='completed'", localID); err != nil {
 					return err
-				}
-				if uses < pro5xUsesBeforePlusPool {
-					return tx.Commit()
 				}
 				kind = "ordinary"
 			}

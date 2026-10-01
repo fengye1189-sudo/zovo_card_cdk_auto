@@ -217,10 +217,19 @@ type PlanRegistryItem struct {
 	CheckoutAmountMinor int64  `json:"checkout_amount_minor"`
 }
 
+// PaymentRegion is the upstream-provided payment-region catalogue.
+// Older upstream versions may omit the catalogue; callers should preserve
+// the legacy default-region behaviour in that case.
+type PaymentRegion struct {
+	Country  string `json:"country"`
+	Currency string `json:"currency"`
+}
+
 type PlansResponse struct {
 	Version  int64               `json:"version"`
 	Plans    map[string]PlanInfo `json:"plans"`
 	Registry []PlanRegistryItem  `json:"registry,omitempty"`
+	PaymentRegions []PaymentRegion `json:"payment_regions,omitempty"`
 }
 
 // GetPlans GET /gpt-direct/plans — 实时服务费与套餐开关
@@ -247,6 +256,12 @@ func (c *Client) GetPlans(ctx context.Context) (*PlansResponse, error) {
 		var items []PlanRegistryItem
 		if err := json.Unmarshal(reg, &items); err == nil {
 			out.Registry = items
+		}
+	}
+	if regions, has := raw["payment_regions"]; has {
+		var items []PaymentRegion
+		if err := json.Unmarshal(regions, &items); err == nil {
+			out.PaymentRegions = items
 		}
 	}
 	plansRaw, ok := raw["plans"]
@@ -332,6 +347,7 @@ type IssueCDKRequest struct {
 	PreferredIssuer      string `json:"preferred_issuer,omitempty"`
 	PreferredSegmentType string `json:"preferred_segment_type,omitempty"`
 	PreferredSegmentKey  string `json:"preferred_segment_key,omitempty"`
+	PaymentCountry       string `json:"payment_country,omitempty"`
 }
 
 // IssueCardPref 发码时的选卡偏好。
@@ -339,6 +355,7 @@ type IssueCardPref struct {
 	Issuer      string
 	SegmentType string
 	SegmentKey  string
+	PaymentCountry string
 }
 
 type IssuedCDK struct {
@@ -347,6 +364,7 @@ type IssuedCDK struct {
 	Plan           string `json:"plan"`
 	CodePrefix     string `json:"code_prefix"`
 	FeeAmountMinor int64  `json:"fee_amount_minor"`
+	PaymentCountry string `json:"payment_country,omitempty"`
 }
 
 type IssueCDKResult struct {
@@ -455,6 +473,7 @@ func (c *Client) IssueCDKs(ctx context.Context, plan string, count int, idem str
 		body.PreferredIssuer = strings.TrimSpace(pref[0].Issuer)
 		body.PreferredSegmentType = strings.TrimSpace(pref[0].SegmentType)
 		body.PreferredSegmentKey = strings.TrimSpace(pref[0].SegmentKey)
+		body.PaymentCountry = strings.ToUpper(strings.TrimSpace(pref[0].PaymentCountry))
 		if body.PreferredSegmentKey != "" && body.PreferredSegmentType == "" {
 			body.PreferredSegmentType = "product"
 		}
@@ -488,6 +507,7 @@ type CDKListItem struct {
 	Status         string `json:"status"`
 	FeeAmountMinor int64  `json:"fee_amount_minor"`
 	CreatedAt      string `json:"created_at"`
+	PaymentCountry string `json:"payment_country,omitempty"`
 }
 
 func (it CDKListItem) FullCodeText() string {
@@ -813,6 +833,17 @@ func (c *Client) Preview(ctx context.Context, code, device string) (int, json.Ra
 
 func (c *Client) Preflight(ctx context.Context, body any, device string) (int, json.RawMessage, error) {
 	return c.doPublicCDK(ctx, http.MethodPost, "/preflight", body, device)
+}
+
+// RecoverSubscription POST /cdk/recover-subscription. The public endpoint
+// authenticates with holder-scoped redemption/preflight tokens; it must never
+// receive the site's privileged API key. Use a longer timeout only for this
+// operation because upstream recovery may wait for a subscription state change.
+func (c *Client) RecoverSubscription(ctx context.Context, body any, device string) (int, json.RawMessage, error) {
+	copyClient := *c.client
+	copyClient.Timeout = 180 * time.Second
+	recoveryClient := &Client{cfg: c.cfg, client: &copyClient}
+	return recoveryClient.doPublicCDK(ctx, http.MethodPost, "/recover-subscription", body, device)
 }
 
 func (c *Client) Redeem(ctx context.Context, body any, device string) (int, json.RawMessage, error) {

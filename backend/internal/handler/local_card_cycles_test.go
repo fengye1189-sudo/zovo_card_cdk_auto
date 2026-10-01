@@ -96,7 +96,7 @@ func TestNoCooldownMigrationRunsIdempotently(t *testing.T) {
 	}
 }
 
-func TestSecondExactDeclineRemovesCardFromRandomPool(t *testing.T) {
+func TestDeclineRetirementRequiresDistinctEmails(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
 	if _, err := ensureLocalCardCycle(123, "ordinary", now); err != nil {
@@ -113,12 +113,19 @@ func TestSecondExactDeclineRemovesCardFromRandomPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	ok, err = localCardHasCycleCapacity(123, "ordinary", now)
+	if err != nil || !ok {
+		t.Fatal("same-email declines incorrectly removed card", ok, err)
+	}
+	if err := recordAutomationDecline(3, 123, "other@example.com", "declined", now+2); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = localCardHasCycleCapacity(123, "ordinary", now)
 	if err != nil || ok {
-		t.Fatal("declined card remained eligible", ok, err)
+		t.Fatal("distinct-email declines did not remove card", ok, err)
 	}
 }
 
-func TestPro5xCardEntersPlusPoolAfterThreeCompletedUses(t *testing.T) {
+func TestHistoricalPro5xCardsEnterPlusPoolAfterEachCompletedUse(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
 	for use := int64(1); use <= pro5xUsesBeforePlusPool; use++ {
@@ -143,17 +150,14 @@ func TestPro5xCardEntersPlusPoolAfterThreeCompletedUses(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if use < pro5xUsesBeforePlusPool && len(ids) != 0 {
-			t.Fatal("Pro 5X card entered Plus pool before third use", use, ids)
-		}
-		if use == pro5xUsesBeforePlusPool && (len(ids) != 1 || ids[0] != 789 || kinds[789] != "ordinary") {
-			t.Fatal("third-use Pro 5X card did not enter shared pool", ids, kinds)
+		if len(ids) != 1 || ids[0] != 789 || kinds[789] != "ordinary" {
+			t.Fatal("completed Pro 5X card did not enter shared pool", use, ids, kinds)
 		}
 	}
 	var kind string
 	var limit int
 	if err := db.DB.QueryRow("SELECT card_kind,success_limit FROM local_card_cycles WHERE card_id=789").Scan(&kind, &limit); err != nil || kind != "ordinary" || limit != localCardUnlimitedLimit {
-		t.Fatal("third-use Pro 5X card did not enter unlimited pool", kind, limit, err)
+		t.Fatal("Pro 5X card did not enter unlimited pool", kind, limit, err)
 	}
 }
 

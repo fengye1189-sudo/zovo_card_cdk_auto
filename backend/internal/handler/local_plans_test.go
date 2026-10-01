@@ -145,4 +145,10 @@ func TestRegionalAndCodexPlans(t *testing.T) {
 			t.Fatalf("region or cap incorrect for %s: %s %s %+v", test.plan, country, currency, settings)
 		}
 	}
+	if !isProDedicatedPlan("pro_5x_cl") || !isPro5xDedicatedPlan("pro_5x_cl") {
+		t.Fatal("Chile Pro 5X must use the dedicated-card funding path")
+	}
+	if got := proDedicatedInitialMinor("pro_5x_cl"); got != 10000 {
+		t.Fatalf("Chile Pro 5X opening balance = %d, want 10000", got)
+	}
 }

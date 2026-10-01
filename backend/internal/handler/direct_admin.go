@@ -155,6 +155,15 @@ func AdminDirectOrders(c *gin.Context) {
 			}
 		}
 	}
+	// Cash-issued orders live in the MaplePass ledger rather than the Zovo API.
+	// Pull signed, read-only facts so the card台 shows the same complete order
+	// history without making cash rows actionable through the Zovo client.
+	if cashRows, err := fetchCashOrders(c.Request.Context()); err == nil {
+		synced = append(synced, cashRows...)
+	} else {
+		// Keep the existing order view available if the optional bridge is down.
+		data["cash_sync_error"] = "现金订单同步暂不可用"
+	}
 	data["synced"] = synced
 	data["synced_total"] = len(synced)
 	c.JSON(200, data)
