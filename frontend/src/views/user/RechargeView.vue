@@ -493,8 +493,13 @@ const successSummary = computed(() => {
   const activated = order.activated_at || order.activatedAt || order.completed_at || raw.activated_at || raw.completed_at
   const expiry = order.subscription_expires_at || order.subscriptionExpiresAt || raw.subscription_expires_at
   const estimatedExpiry = expiry || (activated ? (() => {
-    const d = new Date(Number(activated) < 100000000000 ? Number(activated) * 1000 : activated)
-    return Number.isNaN(d.getTime()) ? '' : d.setMonth(d.getMonth() + 1) && d.toISOString()
+    const numberValue = Number(activated)
+    const dateValue = Number.isFinite(numberValue) && numberValue > 0
+      ? new Date(numberValue < 100000000000 ? numberValue * 1000 : numberValue)
+      : new Date(String(activated))
+    if (Number.isNaN(dateValue.getTime())) return ''
+    dateValue.setMonth(dateValue.getMonth() + 1)
+    return dateValue.toISOString()
   })() : '')
   const renewal = order.renewal_status || order.renewalStatus || raw.renewal_status
   return {
