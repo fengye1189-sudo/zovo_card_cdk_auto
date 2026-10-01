@@ -45,3 +45,29 @@ func AdminProviderPreview(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	c.JSON(200, gin.H{"product": product, "preview_only": true, "candidates": items})
 }
+
+// AdminProviderHealth reports configuration-level health for every registered
+// adapter, including providers that do not implement quoting.
+func AdminProviderHealth(c *gin.Context) {
+	registry := provider.NewRegistry()
+	_ = registry.Register(cardplatform.NewProviderAdapter(nil))
+	_ = registry.Register(jzactivation.NewProviderAdapter(nil))
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	items := make([]gin.H, 0)
+	for _, name := range registry.Names() {
+		p, ok := registry.Get(name)
+		if !ok {
+			continue
+		}
+		h := p.HealthCheck(ctx)
+		items = append(items, gin.H{
+			"provider": h.Provider,
+			"healthy": h.Healthy,
+			"message": h.Message,
+			"capabilities": p.Capabilities(),
+		})
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(200, gin.H{"items": items, "checked_at": time.Now().Unix()})
+}
