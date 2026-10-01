@@ -302,11 +302,11 @@ func maintainAutomationCards(ctx context.Context) {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	// Grandfathered 5X cards keep their prior behavior. Cards governed by the
-	// three-use policy are added only after their third completed 5X upgrade.
+	// All historical Pro 5X cards are ordinary cards now. Only the single
+	// currently claimed reserve card stays out of this pool.
 	rows, selectErr := db.DB.Query(`SELECT p.card_id
 		FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
-		WHERE p.card_id>0 AND p.state='completed' AND c.plan='pro_5x' AND c.status='consumed'`)
+		WHERE p.card_id>0 AND p.state='completed' AND c.plan IN ('pro_5x','pro_5x_cl') AND c.status='consumed'`)
 	if selectErr != nil {
 		return
 	}
@@ -321,7 +321,7 @@ func maintainAutomationCards(ctx context.Context) {
 		return
 	}
 	rows.Close()
-	rows, selectErr = db.DB.Query("SELECT card_id FROM pro5x_card_policy WHERE completed_uses>=?", pro5xUsesBeforePlusPool)
+	rows, selectErr = db.DB.Query("SELECT card_id FROM pro5x_card_policy")
 	if selectErr != nil {
 		return
 	}
@@ -381,17 +381,17 @@ func maintainAutomationCards(ctx context.Context) {
 			fundingFloor = p.Threshold
 		}
 		for _, card := range inventory {
+			var reserveID int64
+			var reserveState string
+			if err := db.DB.QueryRow("SELECT card_id,state FROM pro5x_card_reserve WHERE id=1").Scan(&reserveID, &reserveState); err == nil && reserveID == card.ID && reserveState != "empty" {
+				continue
+			}
 			var dedicated int
 			if err := db.DB.QueryRow(`SELECT COUNT(*)
 				FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
-				WHERE p.card_id=? AND NOT (p.state='completed' AND c.plan='pro_5x' AND c.status='consumed')`, card.ID).Scan(&dedicated); err != nil {
+				WHERE p.card_id=? AND NOT (p.state='completed' AND c.plan IN ('pro_5x','pro_5x_cl') AND c.status='consumed')`, card.ID).Scan(&dedicated); err != nil {
 				return
 			}
-			var heldFor5x int
-			if err := db.DB.QueryRow("SELECT COUNT(*) FROM pro5x_card_policy WHERE card_id=? AND completed_uses<?", card.ID, pro5xUsesBeforePlusPool).Scan(&heldFor5x); err != nil {
-				return
-			}
-			dedicated += heldFor5x
 			if dedicated > 0 {
 				continue
 			}
@@ -800,8 +800,8 @@ func moneyOperationHasEvidence(operationID string) bool {
 // reconcileCreatedCardEnrollment heals the administrator's persisted payment
 // list after a browser draft, an older release, or a completed Pro 5X workflow
 // leaves an eligible site-created card outside the static selection. The
-// active-inventory and lifecycle checks keep prepared Pro 5X reserve cards,
-// unfinished dedicated cards, archived cards, and exhausted cards isolated.
+// active-inventory and lifecycle checks keep the currently prepared shared
+// reserve, unfinished dedicated cards, archived cards, and exhausted cards isolated.
 func reconcileCreatedCardEnrollment(inventory []cardplatform.CardChoice, p automationPolicy) {
 	if !p.Enroll || p.Paused {
 		return
@@ -820,12 +820,11 @@ func reconcileCreatedCardEnrollment(inventory []cardplatform.CardChoice, p autom
 		SELECT p.card_id
 		FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
 		WHERE p.card_id>0 AND p.state='completed'
-		AND c.plan='pro_5x' AND c.status='consumed'
+		AND c.plan IN ('pro_5x','pro_5x_cl') AND c.status='consumed'
 		UNION
 		SELECT card_id
 		FROM pro5x_card_policy
-		WHERE completed_uses>=?
-	) ORDER BY card_id`, pro5xUsesBeforePlusPool)
+	) ORDER BY card_id`)
 	if err != nil {
 		autoAlert("enrollment", 0, "无法核对本站新开卡的支付名单，本轮未改动名单；稍后自动重试。")
 		return
