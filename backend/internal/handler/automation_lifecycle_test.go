@@ -37,6 +37,15 @@ func TestSecondDistinctExactDeclineQueuesRetirementOnce(t *testing.T) {
 	if err := db.DB.QueryRow("SELECT decline_count,retire_state,retire_reason FROM automation_card_lifecycle WHERE card_id=123").Scan(&declines, &state, &reason); err != nil {
 		t.Fatal(err)
 	}
+	if declines != 1 || state != "active" || reason != "" {
+		t.Fatal("same-email declines incorrectly retired card", declines, state, reason)
+	}
+	if err := recordAutomationDecline(3, 123, "other@example.com", "declined", now+3); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DB.QueryRow("SELECT decline_count,retire_state,retire_reason FROM automation_card_lifecycle WHERE card_id=123").Scan(&declines, &state, &reason); err != nil {
+		t.Fatal(err)
+	}
 	if declines != 2 || state != "queued" || reason != "two_declines" {
 		t.Fatal("wrong decline retirement state", declines, state, reason)
 	}

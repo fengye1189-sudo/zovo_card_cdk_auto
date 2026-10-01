@@ -95,7 +95,9 @@ func migrateAutomationDeclineEmails() error {
 	if _, err = tx.Exec(`UPDATE automation_card_lifecycle
 		SET retire_state='queued',retire_reason='two_declines',updated_at=strftime('%s','now')
 		WHERE retire_state IN ('active','queued') AND card_id IN (
-			SELECT card_id FROM automation_card_declines GROUP BY card_id HAVING COUNT(*)>=2
+			SELECT card_id FROM automation_card_declines
+			WHERE NULLIF(TRIM(email_norm),'') IS NOT NULL
+			GROUP BY card_id HAVING COUNT(DISTINCT NULLIF(TRIM(email_norm),''))>=2
 		)`); err != nil {
 		return err
 	}

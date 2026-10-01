@@ -66,6 +66,10 @@ const legacyInventoryAlert = "无法完整核查卡余额，已跳过自动补�
 // opening limit continue to prevent repeated openings.
 const automationReadyCardFloor = 2
 
+// Keep a small funded working set. Other selected cards remain available for
+// rotation, but are only topped up when the working set drops below two.
+const automationFundedCardTarget = 2
+
 func shouldOpenAutomationCard(ready int) bool {
 	return ready < automationReadyCardFloor
 }
@@ -380,7 +384,11 @@ func maintainAutomationCards(ctx context.Context) {
 		if p.Threshold > fundingFloor {
 			fundingFloor = p.Threshold
 		}
-		for _, card := range inventory {
+		// Do not pre-fund every low-balance card. Once two ordinary cards are
+		// ready, leave the rest low and replenish them only when a working slot
+		// becomes necessary.
+		if len(ready) < automationFundedCardTarget {
+			for _, card := range inventory {
 			var reserveID int64
 			var reserveState string
 			if err := db.DB.QueryRow("SELECT card_id,state FROM pro5x_card_reserve WHERE id=1").Scan(&reserveID, &reserveState); err == nil && reserveID == card.ID && reserveState != "empty" {
@@ -433,6 +441,7 @@ func maintainAutomationCards(ctx context.Context) {
 			action, cardID, before = "topup", card.ID, balance
 			openProduct = card.Product
 			break
+			}
 		}
 	}
 	if action == "" && p.Open && shouldOpenAutomationCard(len(ready)) {
