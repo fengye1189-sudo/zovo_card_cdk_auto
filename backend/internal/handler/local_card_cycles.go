@@ -52,7 +52,7 @@ func localCardKind(cardID int64, configured bool) (string, bool, error) {
 		return "", false, err
 	}
 	if isProDedicatedPlan(plan) && status == "consumed" && (state == "submitted" || state == "completed") {
-		if plan == "pro_5x" {
+		if isPro5xDedicatedPlan(plan) {
 			return "ordinary", true, nil
 		}
 		return "pro", true, nil
@@ -295,7 +295,7 @@ func recordAuthoritativeLocalStatusWithCompletion(localID int64, state, message,
 		}
 		if state == "consumed" && cardID > 0 {
 			kind, limit := "pro", localCardUnlimitedLimit
-			if plan == "pro_5x" {
+			if isPro5xDedicatedPlan(plan) {
 				if _, err = tx.Exec(`INSERT INTO pro5x_card_policy(card_id,completed_uses,created_at,updated_at)
 				 VALUES(?,1,?,?) ON CONFLICT(card_id) DO UPDATE SET
 				 completed_uses=pro5x_card_policy.completed_uses+1,updated_at=excluded.updated_at`, cardID, now, now); err != nil {

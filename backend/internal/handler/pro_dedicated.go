@@ -17,14 +17,14 @@ const pro5xInitialMinor int64 = 10000
 const proDailyMaximum int64 = 200000
 
 func proDedicatedInitialMinor(plan string) int64 {
-	if plan == "pro_5x" {
+	if isPro5xDedicatedPlan(plan) {
 		return pro5xInitialMinor
 	}
 	return proInitialMinor
 }
 
 func proDedicatedName(plan string) string {
-	if plan == "pro_5x" {
+	if isPro5xDedicatedPlan(plan) {
 		return "Pro 5X"
 	}
 	return "Pro 20X"

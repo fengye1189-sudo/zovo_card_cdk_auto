@@ -572,7 +572,7 @@ func LocalCDKPreflight(c *gin.Context) {
 		return
 	}
 	s := settingsForLocalPlan(readLocalSettings(), r.Plan)
-	if !s.Enabled || (r.Plan == "pro_5x" && !s.ProDedicatedEnabled) || (!(isProDedicatedPlan(r.Plan) && s.ProDedicatedEnabled) && (len(localCardIDs(s)) == 0 || s.MinCardBalanceMinor <= 0)) {
+	if !s.Enabled || (isPro5xDedicatedPlan(r.Plan) && !s.ProDedicatedEnabled) || (!(isProDedicatedPlan(r.Plan) && s.ProDedicatedEnabled) && (len(localCardIDs(s)) == 0 || s.MinCardBalanceMinor <= 0)) {
 		localError(c, 503, "卡密有效，充值通道尚未开放，请联系商家")
 		return
 	}
