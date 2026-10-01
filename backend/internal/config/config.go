@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -70,9 +71,21 @@ func Load() (*Config, error) {
 			PoolSize: getEnvInt("REDIS_POOL_SIZE", 10),
 		},
 		JWT: JWTConfig{
-			Secret:       getEnv("JWT_SECRET", "your-secret-key-change-in-production"),
+			// Do not silently manufacture a signing key. Debug/test callers may
+			// still use auth.JWTSecret's compatibility fallback, but a release
+			// server must fail before opening an admin endpoint.
+			Secret:       strings.TrimSpace(os.Getenv("JWT_SECRET")),
 			ExpirationHs: getEnvInt("JWT_EXPIRATION_HOURS", 24),
 		},
+	}
+
+	if strings.EqualFold(cfg.Server.Mode, "release") {
+		if len(cfg.JWT.Secret) < 32 {
+			return nil, fmt.Errorf("JWT_SECRET must be set to at least 32 characters in release mode")
+		}
+		if cfg.JWT.ExpirationHs < 1 || cfg.JWT.ExpirationHs > 24 {
+			return nil, fmt.Errorf("JWT_EXPIRATION_HOURS must be between 1 and 24 in release mode")
+		}
 	}
 
 	return cfg, nil
