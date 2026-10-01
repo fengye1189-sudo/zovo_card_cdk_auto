@@ -24,12 +24,13 @@ func startPreparedPro5x(c *gin.Context, r localCode, token, pf string, credentia
 		return
 	}
 	cli := cardplatform.NewFromSettings()
-	version, currentFee, err := cli.DirectPricing(c.Request.Context(), r.Plan)
+	upstreamPlan := upstreamLocalPlan(r.Plan)
+	version, currentFee, err := cli.DirectPricing(c.Request.Context(), upstreamPlan)
 	if err != nil || version != r.Version || currentFee != fee || currentFee > 50 {
 		localError(c, 409, name+" 套餐或服务费发生变化，未提交升级")
 		return
 	}
-	candidates, err := cli.DirectCandidatesForPlan(c.Request.Context(), r.Plan)
+	candidates, err := cli.DirectCandidatesForPlan(c.Request.Context(), upstreamPlan)
 	usable := false
 	if err == nil {
 		for _, candidate := range candidates {
@@ -69,11 +70,11 @@ func startPreparedPro5x(c *gin.Context, r localCode, token, pf string, credentia
 	}
 	defer tx.Rollback()
 	result, err := tx.Exec(`UPDATE local_cdks SET status='reserved',message='订单处理中，请勿重复提交'
-		WHERE id=? AND plan='pro_5x' AND status='unused' AND token_hash=? AND preflight_hash=?
+		WHERE id=? AND plan=? AND status='unused' AND token_hash=? AND preflight_hash=?
 		AND credential_hash=? AND preflight_expires>? AND expires_at>?
-		AND EXISTS(SELECT 1 FROM operations_products WHERE id=COALESCE((SELECT product_id FROM operations_product_bindings WHERE local_id=?),'plus') AND plan='pro_5x' AND enabled=1)
+		AND EXISTS(SELECT 1 FROM operations_products WHERE id=COALESCE((SELECT product_id FROM operations_product_bindings WHERE local_id=?),'plus') AND plan=? AND enabled=1)
 		AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?)`,
-		r.ID, localHash(token), localHash(pf), credentialBinding(credential, settings), now, now, r.ID, policyVersion)
+		r.ID, r.Plan, localHash(token), localHash(pf), credentialBinding(credential, settings), now, now, r.ID, r.Plan, policyVersion)
 	if err != nil {
 		localError(c, 503, "升级订单锁定失败，未提交升级")
 		return
@@ -125,12 +126,13 @@ func runPreparedPro5x(r localCode, cardID int64, requestID, pf string, credentia
 		fail("Pro 5X 预备卡已领取，但设置或预检发生变化；未付款，请人工核对该卡。")
 		return
 	}
-	version, currentFee, err := cli.DirectPricing(ctx, r.Plan)
+	upstreamPlan := upstreamLocalPlan(r.Plan)
+	version, currentFee, err := cli.DirectPricing(ctx, upstreamPlan)
 	if err != nil || version != r.Version || currentFee != fee || currentFee > 50 {
 		fail("Pro 5X 预备卡已领取，但套餐或服务费变化；未付款，请人工核对该卡。")
 		return
 	}
-	candidates, err := cli.DirectCandidatesForPlan(ctx, r.Plan)
+	candidates, err := cli.DirectCandidatesForPlan(ctx, upstreamPlan)
 	usable := false
 	if err == nil {
 		for _, candidate := range candidates {
@@ -182,9 +184,11 @@ func runPreparedPro5x(r localCode, cardID int64, requestID, pf string, credentia
 		fail("Pro 5X 付款锁定结果待核对；不会重复付款。")
 		return
 	}
+	country, currency := localPlanPaymentRegion(r.Plan)
 	raw, err := cli.DirectOrder(ctx, gin.H{
 		"product": "gpt", "no_auto_card_switch": true, "card_id": cardID,
-		"plan": r.Plan, "credential": credential, "preflight_token": pf,
+		"plan": upstreamPlan, "payment_country": country, "payment_currency": currency,
+		"credential": credential, "preflight_token": pf,
 		"client_request_id": requestID, "pricing_version": r.Version,
 	}, requestID)
 	var order struct {
