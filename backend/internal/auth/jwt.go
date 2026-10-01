@@ -1,11 +1,17 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/golang-jwt/jwt/v5"
 )
+
+var debugSecretOnce sync.Once
+var debugSecret string
 
 type CustomClaims struct {
 	UserID         int64  `json:"user_id"`
@@ -27,7 +33,15 @@ func JWTSecret() string {
 		if strings.EqualFold(os.Getenv("SERVER_MODE"), "release") {
 			return ""
 		}
-		secret = "your-secret-key-change-in-production"
+		debugSecretOnce.Do(func() {
+			buf := make([]byte, 32)
+			if _, err := rand.Read(buf); err == nil {
+				debugSecret = hex.EncodeToString(buf)
+			} else {
+				debugSecret = "local-debug-secret-unavailable"
+			}
+		})
+		secret = debugSecret
 	}
 	return secret
 }
