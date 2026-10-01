@@ -254,13 +254,16 @@ func maintainAutomationCards(ctx context.Context) {
 		autoAlert("card_lifecycle", 0, "卡片周期或卡头统计更新失败，本轮未执行销卡、补款或开卡。")
 		return
 	}
+	// Keep the single shared Pro 5X reserve funded for both Philippines and
+	// Chile orders. A claimed reserve is replenished instead of opening another
+	// card for the next order.
+	if maintainPro5xReserve(ctx, cli, inventory, p, version, scope, productMap, now) {
+		return
+	}
 	reconcileRetiredCards(inventory, now)
 	if p.Retire && processQueuedCardRetirement(ctx, cli, inventory, scope, version, now) {
 		return
 	}
-	// Pro 5X is deliberately on-demand. Do not keep a dedicated card funded or
-	// logically reserved between orders; the redemption request opens and funds
-	// a card only when needed. This avoids idle holds and stale reserve states.
 	if (!p.Topup && !p.Open) || !readLocalSettings().Enabled {
 		return
 	}
