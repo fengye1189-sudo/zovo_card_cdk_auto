@@ -256,6 +256,18 @@ func localAvailableCards(c *gin.Context, cli *cardplatform.Client, s localSettin
 	}
 	available := make([]int64, 0, len(ids))
 	for _, id := range ids {
+		// Plus/PULS is a PHP/Philippines product. Never submit it with an
+		// explicitly Chile-marked card; if no PHP card remains, fail closed
+		// instead of silently accepting the higher-cost CL route.
+		if plan == "plus" {
+			chile, regionErr := localCardIsChileProduct(id)
+			if regionErr != nil {
+				return nil, regionErr
+			}
+			if chile {
+				continue
+			}
+		}
 		if isProDedicatedPlan(plan) && kinds[id] == "pro" {
 			continue
 		}

@@ -47,6 +47,34 @@ func TestPlusUsesRemainAvailableWithoutCooldown(t *testing.T) {
 	}
 }
 
+func TestPlusSkipsExplicitChileCardProduct(t *testing.T) {
+	f := newLocalFixture(t)
+	now := time.Now().Unix()
+	for _, id := range []int64{123, 456} {
+		if _, err := ensureLocalCardCycle(id, "ordinary", now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.DB.Exec("UPDATE automation_card_lifecycle SET product_code='XL537872' WHERE card_id=123"); err != nil {
+		t.Fatal(err)
+	}
+	f.plan = "plus"
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequestWithContext(context.Background(), "GET", "/", nil)
+	ids, err := localAvailableCards(c, cardplatform.NewFromSettings(), localSettings{CardIDs: []int64{123, 456}, MinCardBalanceMinor: 100}, "plus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if id == 123 {
+			t.Fatalf("explicit Chile product was admitted to Plus pool: %v", ids)
+		}
+	}
+	if len(ids) != 1 || ids[0] != 456 {
+		t.Fatalf("unexpected PHP/Philippines Plus pool: %v", ids)
+	}
+}
+
 func TestGoDoesNotChangePlusSuccessHistory(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()

@@ -2,9 +2,34 @@ package handler
 
 import (
 	"database/sql"
+	"strings"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
+
+// localCardIsChileProduct is intentionally conservative: only an explicit
+// Chile product marker is excluded from the PHP/Philippines Plus pool. When
+// product metadata is missing we keep the card eligible for the upstream's
+// own PH/PHP routing instead of guessing from a BIN.
+func localCardIsChileProduct(cardID int64) (bool, error) {
+	var product string
+	err := db.DB.QueryRow(`
+		SELECT COALESCE(NULLIF(TRIM(l.product_code),''), NULLIF(TRIM(s.product_code),''), '')
+		FROM automation_card_lifecycle l
+		LEFT JOIN automation_inventory_snapshot s ON s.card_id=l.card_id
+		WHERE l.card_id=?
+		ORDER BY CASE WHEN TRIM(l.product_code)<>'' THEN 0 ELSE 1 END,
+		         CASE WHEN s.present=1 THEN 0 ELSE 1 END
+		LIMIT 1`, cardID).Scan(&product)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	product = strings.ToUpper(strings.TrimSpace(product))
+	return strings.HasPrefix(product, "XL") || strings.HasPrefix(product, "CL-") || strings.Contains(product, "CHILE"), nil
+}
 
 // Card selection is lifetime-balanced and random. There is no success-count
 // cap or cooldown; the stored counter is retained only for reporting.
