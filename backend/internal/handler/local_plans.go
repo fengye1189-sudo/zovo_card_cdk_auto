@@ -28,6 +28,14 @@ func localPlanPaymentRegion(plan string) (string, string) {
 	return "PH", "PHP"
 }
 
+// localPaymentRegionValid is a fail-closed guard for every customer upgrade
+// request. PULS/Plus must never be priced as a Chilean order merely because
+// a Chile card exists in the account.
+func localPaymentRegionValid(plan, country, currency string) bool {
+	wantCountry, wantCurrency := localPlanPaymentRegion(plan)
+	return country == wantCountry && currency == wantCurrency
+}
+
 func localCodeLabel(plan string) string {
 	switch plan {
 	case "plus":

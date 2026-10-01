@@ -152,3 +152,21 @@ func TestRegionalAndCodexPlans(t *testing.T) {
 		t.Fatalf("Chile Pro 5X opening balance = %d, want 10000", got)
 	}
 }
+
+func TestLocalPaymentRegionValidFailsClosed(t *testing.T) {
+	for _, test := range []struct {
+		plan, country, currency string
+		want                   bool
+	}{
+		{"plus", "PH", "PHP", true},
+		{"pro_5x", "PH", "PHP", true},
+		{"pro_5x_cl", "CL", "CLP", true},
+		{"plus", "CL", "CLP", false},
+		{"plus", "PH", "CLP", false},
+		{"pro_5x_cl", "PH", "PHP", false},
+	} {
+		if got := localPaymentRegionValid(test.plan, test.country, test.currency); got != test.want {
+			t.Fatalf("region validation for %s/%s/%s = %v, want %v", test.plan, test.country, test.currency, got, test.want)
+		}
+	}
+}

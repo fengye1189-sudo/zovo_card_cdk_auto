@@ -185,6 +185,10 @@ func runPreparedPro5x(r localCode, cardID int64, requestID, pf string, credentia
 		return
 	}
 	country, currency := localPlanPaymentRegion(r.Plan)
+	if !localPaymentRegionValid(r.Plan, country, currency) {
+		fail("Pro 5X 商品地区配置不一致；未付款，请人工核对。")
+		return
+	}
 	raw, err := cli.DirectOrder(ctx, gin.H{
 		"product": "gpt", "no_auto_card_switch": true, "card_id": cardID,
 		"plan": upstreamPlan, "payment_country": country, "payment_currency": currency,

@@ -600,6 +600,10 @@ func LocalCDKPreflight(c *gin.Context) {
 	cli := cardplatform.NewFromSettings()
 	upstreamPlan := upstreamLocalPlan(r.Plan)
 	country, currency := localPlanPaymentRegion(r.Plan)
+	if !localPaymentRegionValid(r.Plan, country, currency) {
+		localError(c, 409, "商品地区配置不一致，尚未提交充值")
+		return
+	}
 	version, fee, e := cli.DirectPricing(c.Request.Context(), upstreamPlan)
 	if e != nil {
 		localError(c, 502, "暂时无法获取充值报价，请联系商家检查通道")
@@ -720,6 +724,10 @@ func LocalCDKRedeem(c *gin.Context) {
 	cli := cardplatform.NewFromSettings()
 	upstreamPlan := upstreamLocalPlan(r.Plan)
 	country, currency := localPlanPaymentRegion(r.Plan)
+	if !localPaymentRegionValid(r.Plan, country, currency) {
+		localError(c, 409, "商品地区配置不一致，尚未提交充值")
+		return
+	}
 	version, fee, e := cli.DirectPricing(c.Request.Context(), upstreamPlan)
 	if e != nil || version != r.Version || fee > s.MaxFeeMinor {
 		localError(c, 409, "套餐或报价发生变化，请重新预检；尚未提交充值")
