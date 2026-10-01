@@ -268,6 +268,27 @@
         <button class="btn-secondary" @click="resetAll">再兑一张</button>
       </div>
     </div>
+    <div v-if="showSuccessModal" class="fixed inset-0 z-[9997] flex items-center justify-center bg-black/65 p-4" role="dialog" aria-modal="true" aria-labelledby="success-title" @click.self="showSuccessModal = false">
+      <section class="w-full max-w-lg overflow-hidden rounded-3xl border border-emerald-200 bg-white shadow-2xl dark:border-emerald-900 dark:bg-slate-900">
+        <div class="bg-gradient-to-br from-emerald-500 to-teal-600 px-6 py-7 text-center text-white">
+          <div class="mx-auto mb-3 grid h-16 w-16 place-items-center rounded-full bg-white/20 text-4xl" aria-hidden="true">✓</div>
+          <h2 id="success-title" class="text-3xl font-extrabold tracking-tight">升级成功</h2>
+          <p class="mt-2 text-sm text-white/90">开通流程已完成，请到 ChatGPT 刷新确认权益。</p>
+        </div>
+        <div class="space-y-3 px-6 py-5 text-sm">
+          <div class="grid grid-cols-[96px_1fr] gap-3"><span class="text-muted">套餐</span><strong class="text-ink">{{ successSummary.plan }}</strong></div>
+          <div class="grid grid-cols-[96px_1fr] gap-3"><span class="text-muted">兑换账号</span><strong class="break-all text-ink">{{ successSummary.email || '已隐藏' }}</strong></div>
+          <div class="grid grid-cols-[96px_1fr] gap-3"><span class="text-muted">开通时间</span><span class="text-ink">{{ successSummary.activatedAt }}</span></div>
+          <div class="grid grid-cols-[96px_1fr] gap-3"><span class="text-muted">预计到期</span><span class="text-ink">{{ successSummary.expiresAt }}</span></div>
+          <div class="grid grid-cols-[96px_1fr] gap-3"><span class="text-muted">续费状态</span><span class="text-ink">{{ successSummary.renewal }}</span></div>
+          <div class="rounded-xl bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200">ChatGPT 页面可能需要几十秒到几分钟同步。请刷新或重新登录，不要重复提交同一张卡密。</div>
+          <div class="flex flex-wrap gap-2 pt-2">
+            <a class="btn-primary flex-1 text-center" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">打开 ChatGPT 确认</a>
+            <button class="btn-secondary" type="button" @click="showSuccessModal = false">查看订单详情</button>
+          </div>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -322,6 +343,7 @@ const resultBody = ref<any>(null)
 const timeline = ref<any[]>([])
 const polling = ref(false)
 const chatGptHint = ref('')
+const showSuccessModal = ref(false)
 let pollTimer: any = null
 let missingPolls = 0
 const displayResultEmail = computed(() => resultEmail.value || account.value.email || '')
@@ -456,6 +478,33 @@ watch(
 const resultPretty = computed(() => JSON.stringify(resultBody.value, null, 2))
 const resultCanRetry = computed(() => resultCanResubmit(resultBody.value))
 const resultQueryUntil = computed(() => resultQueryDeadline(resultBody.value))
+
+function displayTimestamp(value: unknown) {
+  if (typeof value === 'number' || (typeof value === 'string' && /^\d{10,13}$/.test(value))) {
+    const n = Number(value)
+    return fmtTime(new Date(n < 100000000000 ? n * 1000 : n).toISOString())
+  }
+  return value ? fmtTime(value) : '上游未提供'
+}
+
+const successSummary = computed(() => {
+  const raw = resultBody.value || {}
+  const order = raw.order || raw.data?.order || raw.data || raw
+  const activated = order.activated_at || order.activatedAt || order.completed_at || raw.activated_at || raw.completed_at
+  const expiry = order.subscription_expires_at || order.subscriptionExpiresAt || raw.subscription_expires_at
+  const estimatedExpiry = expiry || (activated ? (() => {
+    const d = new Date(Number(activated) < 100000000000 ? Number(activated) * 1000 : activated)
+    return Number.isNaN(d.getTime()) ? '' : d.setMonth(d.getMonth() + 1) && d.toISOString()
+  })() : '')
+  const renewal = order.renewal_status || order.renewalStatus || raw.renewal_status
+  return {
+    plan: planLabel(order.plan || raw.plan || targetPlan.value),
+    email: String(order.account_email || order.email || raw.account_email || displayResultEmail.value || ''),
+    activatedAt: displayTimestamp(activated),
+    expiresAt: displayTimestamp(estimatedExpiry),
+    renewal: renewal === true || renewal === 'active' || renewal === 'pending' ? '请到 ChatGPT 核对' : renewal === false || renewal === 'cancelled' ? '已关闭自动续费' : '上游未提供',
+  }
+})
 
 function refreshChatGptHint() {
   chatGptHint.value = '请在 ChatGPT 中硬刷新页面（Windows：Ctrl + Shift + R；Mac：⌘ + Shift + R），或退出后重新登录。若 5 分钟后仍显示免费版，请保留本页订单号和截图联系客服核对。'
@@ -735,6 +784,7 @@ function extractCardLastFour(order: any): string {
 }
 
 function applyResultPayload(data: any) {
+  const previousStatus = String(resultStatus.value || '').toLowerCase()
   resultBody.value = data
   // 卡台公开结构：{ order: {status,stage,message,account_email,card_last_four}, events: [] }
   // 兼容顶层扁平 / data 包裹
@@ -753,6 +803,7 @@ function applyResultPayload(data: any) {
     data?.data?.message ||
     ''
   resultStatus.value = st
+  if (String(st).toLowerCase() === 'completed' && previousStatus !== 'completed') showSuccessModal.value = true
   resultStage.value = stage
   resultMessage.value = message
   const email = String(order.account_email || order.email || data?.account_email || '').trim()
@@ -1111,6 +1162,7 @@ function resetAll() {
   timeline.value = []
   polling.value = false
   chatGptHint.value = ''
+  showSuccessModal.value = false
 }
 </script>
 
