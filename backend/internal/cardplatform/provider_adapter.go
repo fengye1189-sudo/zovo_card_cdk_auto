@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
@@ -71,6 +72,44 @@ func (a *ProviderAdapter) GetOrder(ctx context.Context, externalID string) (prov
 		return provider.OrderResult{}, err
 	}
 	return normalizeOrderResult(raw), nil
+}
+
+// Quote exposes the authoritative service fee published by ZOVO. Product
+// names are normalized here so routing code does not import ZOVO plan keys.
+func (a *ProviderAdapter) Quote(ctx context.Context, product string) (provider.Quote, error) {
+	if a == nil || a.client == nil {
+		return provider.Quote{}, fmt.Errorf("zovo client is not configured")
+	}
+	plan := strings.TrimSpace(product)
+	if plan == "" {
+		plan = "plus"
+	}
+	_, fee, err := a.client.DirectPricing(ctx, plan)
+	if err != nil {
+		return provider.Quote{Provider: a.Name(), Product: plan, Available: false, Currency: "USD"}, err
+	}
+	stock, stockErr := a.Inventory(ctx, plan)
+	return provider.Quote{
+		Provider: a.Name(), Product: plan, Available: stockErr == nil && stock > 0,
+		CostMinor: fee, Currency: "USD", Stock: stock, ObservedAt: time.Now().Unix(),
+	}, stockErr
+}
+
+func (a *ProviderAdapter) Inventory(ctx context.Context, product string) (int64, error) {
+	if a == nil || a.client == nil {
+		return 0, fmt.Errorf("zovo client is not configured")
+	}
+	candidates, err := a.client.DirectCandidatesForPlan(ctx, strings.TrimSpace(product))
+	if err != nil {
+		return 0, err
+	}
+	var available int64
+	for _, candidate := range candidates {
+		if candidate.Usable(1) {
+			available++
+		}
+	}
+	return available, nil
 }
 
 func normalizeOrderResult(raw json.RawMessage) provider.OrderResult {
