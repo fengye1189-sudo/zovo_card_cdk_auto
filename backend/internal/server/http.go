@@ -196,6 +196,7 @@ func setupRoutes(r *gin.Engine) {
 			pubCDK.GET("/plans", handler.PublicCDKPlans)
 			pubCDK.POST("/preview", handler.PublicCDKMutationLimit(), handler.PublicCDKPreview)
 			pubCDK.POST("/preflight", handler.PublicCDKMutationLimit(), handler.PublicCDKPreflight)
+			pubCDK.POST("/recover-subscription", handler.PublicCDKMutationLimit(), handler.PublicCDKGraceRecovery)
 			pubCDK.POST("/redeem", handler.PublicCDKMutationLimit(), handler.PublicCDKRedeem)
 			pubCDK.POST("/result", handler.PublicCDKResult)
 			// 刷新进度 / 任务查询：凭卡密反查本站绑定的 redemption_token
