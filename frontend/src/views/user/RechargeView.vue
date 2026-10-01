@@ -249,7 +249,19 @@
           </template>
           <div v-if="resultQueryUntil" class="mt-1">可使用同一卡密查询至 {{ fmtTime(resultQueryUntil) }}。</div>
         </div>
-        <div v-if="resultStatus === 'completed'" class="alert alert-success">开通完成，请到 ChatGPT 账号确认套餐。</div>
+        <div v-if="resultStatus === 'completed'" class="space-y-3">
+          <div class="alert alert-success">
+            开通流程已完成。ChatGPT 页面通常还需要几十秒到几分钟同步，当前页面显示免费版不代表本次开通失败。
+          </div>
+          <div class="rounded-xl border p-3 text-sm" style="border-color: var(--brd); background: var(--surface-2, var(--soft))">
+            <p class="text-ink">请在 ChatGPT 页面刷新或重新登录后确认套餐；不要重复提交同一张卡密。</p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <a class="btn-primary inline-flex" href="https://chatgpt.com/" target="_blank" rel="noopener noreferrer">打开 ChatGPT 确认</a>
+              <button class="btn-secondary" type="button" @click="refreshChatGptHint">我已刷新，仍显示免费版</button>
+            </div>
+            <p v-if="chatGptHint" class="mt-2 text-xs text-muted">{{ chatGptHint }}</p>
+          </div>
+        </div>
         <button v-if="resultCanRetry" class="btn-primary" :disabled="busy" @click="retryCurrentCode">
           {{ busy ? '重新检查中…' : '使用这张卡密重新提交' }}
         </button>
@@ -309,6 +321,7 @@ const resultCardLastFour = ref('')
 const resultBody = ref<any>(null)
 const timeline = ref<any[]>([])
 const polling = ref(false)
+const chatGptHint = ref('')
 let pollTimer: any = null
 let missingPolls = 0
 const displayResultEmail = computed(() => resultEmail.value || account.value.email || '')
@@ -443,6 +456,10 @@ watch(
 const resultPretty = computed(() => JSON.stringify(resultBody.value, null, 2))
 const resultCanRetry = computed(() => resultCanResubmit(resultBody.value))
 const resultQueryUntil = computed(() => resultQueryDeadline(resultBody.value))
+
+function refreshChatGptHint() {
+  chatGptHint.value = '请在 ChatGPT 中硬刷新页面（Windows：Ctrl + Shift + R；Mac：⌘ + Shift + R），或退出后重新登录。若 5 分钟后仍显示免费版，请保留本页订单号和截图联系客服核对。'
+}
 
 const targetPlan = computed(() =>
   String(previewInfo.value?.plan || previewInfo.value?.plan_type || '').toLowerCase(),
@@ -1093,6 +1110,7 @@ function resetAll() {
   resultCardLastFour.value = ''
   timeline.value = []
   polling.value = false
+  chatGptHint.value = ''
 }
 </script>
 
