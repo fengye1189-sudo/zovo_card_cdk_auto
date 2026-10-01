@@ -99,9 +99,9 @@ func enforceJWTSecret(mode string) error {
 	weak := secret == "" ||
 		secret == "your-secret-key-change-in-production" ||
 		secret == "dev-secret-key-change-in-production" ||
-		len(secret) < 16
+		len(secret) < 32
 	if mode == "release" && weak {
-		return fmt.Errorf("不安全的 JWT_SECRET：release 模式必须设置至少 16 位的随机 JWT_SECRET 环境变量")
+		return fmt.Errorf("不安全的 JWT_SECRET：release 模式必须设置至少 32 位的随机 JWT_SECRET 环境变量")
 	}
 	if weak {
 		log.Printf("⚠️  当前 JWT_SECRET 不安全（默认/过短）。仅可用于本地开发，部署前请设置强随机 JWT_SECRET（release 模式将拒绝启动）。")
