@@ -40,6 +40,14 @@ func localCardKind(cardID int64, configured bool) (string, bool, error) {
 	 FROM pro_dedicated_orders p LEFT JOIN local_cdks c ON c.id=p.local_id
 	 WHERE p.card_id=?`, cardID).Scan(&state, &plan, &status)
 	if err == sql.ErrNoRows {
+		// A completed Pro 5X order deliberately releases its dedicated-order
+		// card_id. The durable pro5x_card_policy row is then the authoritative
+		// proof that this physical card has completed a Pro 5X use and may join
+		// the ordinary shared pool.
+		var policyCardID int64
+		if policyErr := db.DB.QueryRow("SELECT card_id FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&policyCardID); policyErr == nil && policyCardID == cardID {
+			return "ordinary", true, nil
+		}
 		if configured {
 			return "ordinary", true, nil
 		}
@@ -118,7 +126,7 @@ func localPoolCards(s localSettings, now int64) ([]int64, map[int64]string, erro
 	rows, err := db.DB.Query(`SELECT p.card_id
 	 FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
 	 WHERE p.card_id>0 AND p.state IN ('submitted','completed')
-	 AND c.plan IN ('pro_5x','pro_20x') AND c.status='consumed' ORDER BY p.local_id`)
+	 AND c.plan IN ('pro_5x','pro_5x_cl','pro5x','pro_20x') AND c.status='consumed' ORDER BY p.local_id`)
 	if err != nil {
 		return nil, nil, err
 	}

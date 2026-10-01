@@ -283,9 +283,12 @@ func maintainAutomationCards(ctx context.Context) {
 	renewalStates := loadCardRenewalStates(inventory, now)
 	verifyMoneyOperationsForScope(inventory, p, scope)
 	if !dedicatedMoneyBlocked() {
-		// Clear the legacy global warning once no unresolved card-opening
-		// operation remains. Card-scoped top-up warnings are emitted separately.
-		autoResolve("money")
+		// Do not clear the shared money alert merely because this inventory read
+		// succeeded. The same key also carries pricing, budget and unresolved
+		// funding warnings; those must remain visible until their own evidence
+		// resolves them. Inventory-specific legacy warnings are migrated by
+		// recordInventoryScan above.
+		resolveLegacyMoneyAlert(legacyInventoryAlert)
 	}
 	if uncertain > 0 && dedicatedMoneyBlocked() {
 		var remaining int
@@ -297,10 +300,11 @@ func maintainAutomationCards(ctx context.Context) {
 	}
 	reconcilePro5xReserve(inventory)
 	reconcileCreatedCardEnrollment(inventory, p)
-	// A pending provider-accepted money operation is only reconciled in this
-	// cycle. Even when it is confirmed, defer any new funding decision until the
-	// next cycle so one delayed observation cannot trigger back-to-back spending.
-	if (pending > 0 || uncertain > 0) && dedicatedMoneyBlocked() {
+	// A pending or uncertain provider-accepted money operation is only
+	// reconciled in this cycle. Even when it is confirmed, defer any new funding
+	// decision until the next cycle so one delayed observation cannot trigger
+	// back-to-back spending on the same card.
+	if pending > 0 || uncertain > 0 {
 		return
 	}
 	if dedicatedMoneyBlocked() {
