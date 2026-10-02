@@ -539,6 +539,7 @@ function openProviderDialog() {
 onMounted(async () => {
   await loadSettings()
   await loadNetwork()
+  await loadProviderPreview()
 })
 </script>
 
