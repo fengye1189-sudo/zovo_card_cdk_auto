@@ -164,11 +164,19 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	selectedReady := false
 	var selected cardplatform.CardChoice
 	for _, candidate := range inventory {
-		if candidate.ID <= 0 || candidate.ID == excludedReviewID || candidate.Status != "ACTIVE" || productMap[candidate.Product].Code == "" {
+		if candidate.ID <= 0 || candidate.ID == excludedReviewID || candidate.Status != "ACTIVE" {
 			continue
 		}
 		balance, ok := usdMinor(candidate.Balance)
 		if !ok {
+			continue
+		}
+		// A funded active card can be used as the temporary 5X reserve even
+		// when its original product code is not present in the automation
+		// catalog. The product catalog is only needed if we must top it up.
+		// Requiring a catalog match here incorrectly excluded otherwise usable
+		// cards and left customers stuck on the "预备卡正在补充或核对" page.
+		if balance < pro5xInitialMinor && productMap[candidate.Product].Code == "" {
 			continue
 		}
 		if held, heldErr := localCardMoneyHeld(candidate.ID); heldErr != nil || held {
