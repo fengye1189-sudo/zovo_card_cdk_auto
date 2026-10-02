@@ -104,14 +104,21 @@ func startPreparedPro5x(c *gin.Context, r localCode, token, pf string, credentia
 // transient opening/funding states; review/unknown states remain fail-closed
 // so an uncertain card operation can never cause a duplicate payment.
 func waitForPro5xReserve(ctx context.Context) (pro5xReserve, error) {
-	const attempts = 15
+	const attempts = 30
+	woken := false
 	for i := 0; i < attempts; i++ {
 		reserve, err := loadPro5xReserve()
 		if err != nil {
 			return reserve, err
 		}
-		if reserve.State == "ready" || reserve.State == "empty" || reserve.State == "review" {
+		if reserve.State == "ready" || reserve.State == "review" {
 			return reserve, nil
+		}
+		if reserve.State == "empty" && !woken {
+			// The money maintainer normally wakes every 30 seconds. A customer
+			// redeem should not race that scheduler and receive a false failure.
+			_, _ = db.DB.Exec("UPDATE automation_runtime SET money_after=0 WHERE id=1")
+			woken = true
 		}
 		select {
 		case <-ctx.Done():
