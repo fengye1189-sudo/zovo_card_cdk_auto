@@ -18,7 +18,7 @@ func startPreparedPro5x(c *gin.Context, r localCode, token, pf string, credentia
 		localError(c, 409, name+" 自动处理条件尚未满足，未提交升级")
 		return
 	}
-	reserve, err := loadPro5xReserve()
+	reserve, err := waitForPro5xReserve(c.Request.Context())
 	if err != nil || reserve.State != "ready" || reserve.CardID <= 0 {
 		localError(c, 409, name+" 预备卡正在补充或核对，请稍后再试")
 		return
@@ -97,6 +97,29 @@ func startPreparedPro5x(c *gin.Context, r localCode, token, pf string, credentia
 	go runPreparedPro5x(r, cardID, requestID, pf, secretCopy, settings, policy, policyVersion, scope, fee)
 	r, _ = loadLocal("id", strconv.FormatInt(r.ID, 10))
 	c.JSON(202, localPublicResult(r))
+}
+
+// waitForPro5xReserve smooths the short hand-off between the background
+// reserve maintainer and a customer redeem request. It only waits for
+// transient opening/funding states; review/unknown states remain fail-closed
+// so an uncertain card operation can never cause a duplicate payment.
+func waitForPro5xReserve(ctx context.Context) (pro5xReserve, error) {
+	const attempts = 15
+	for i := 0; i < attempts; i++ {
+		reserve, err := loadPro5xReserve()
+		if err != nil {
+			return reserve, err
+		}
+		if reserve.State == "ready" || reserve.State == "empty" || reserve.State == "review" {
+			return reserve, nil
+		}
+		select {
+		case <-ctx.Done():
+			return reserve, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return loadPro5xReserve()
 }
 
 func runPreparedPro5x(r localCode, cardID int64, requestID, pf string, credential json.RawMessage, settings localSettings, policy automationPolicy, policyVersion int64, scope string, fee int64) {
