@@ -28,8 +28,8 @@ func TestDailyDigestTimeDedupAndNoSecrets(t *testing.T) {
 	now = now.Add(time.Minute)
 	queueOperationsDigest(context.Background(), now)
 	db.DB.QueryRow("SELECT COUNT(*) FROM notification_outbox").Scan(&count)
-	if count != 0 {
-		t.Fatal("healthy digest must stay silent")
+	if count != 1 {
+		t.Fatal("daily digest missing")
 	}
 	autoAlert("actionable-problem", 0, "需要处理的异常")
 	queueOperationsDigest(context.Background(), now)

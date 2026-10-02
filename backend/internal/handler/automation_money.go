@@ -134,6 +134,7 @@ func maintainCardRenewalAlerts(now int64) {
 		return
 	}
 	active := map[string]bool{}
+	scannedCards, protectedCards := int64(0), int64(0)
 	for rows.Next() {
 		var cardID, due, count int64
 		var emails string
@@ -157,16 +158,24 @@ func maintainCardRenewalAlerts(now int64) {
 			if rows.Scan(&cardID) != nil {
 				continue
 			}
+			scannedCards++
 			protected, status := cardRenewalProtected(cardID)
 			if !protected {
 				continue
 			}
+			protectedCards++
 			key := fmt.Sprintf("card-renewal-state:%d", cardID)
 			active[key] = true
 			autoAlert(key, 0, fmt.Sprintf("支付卡 #%d 的自动续费状态为“%s”，已保护；不会用于临时 5X 或普通补款。", cardID, status))
 		}
 		rows.Close()
 	}
+	_, _ = db.DB.Exec(`CREATE TABLE IF NOT EXISTS operations_renewal_scan(
+		id INTEGER PRIMARY KEY CHECK(id=1),checked_at INTEGER NOT NULL DEFAULT 0,
+		scanned INTEGER NOT NULL DEFAULT 0,protected INTEGER NOT NULL DEFAULT 0)`)
+	_, _ = db.DB.Exec(`INSERT INTO operations_renewal_scan(id,checked_at,scanned,protected)
+		VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,
+		scanned=excluded.scanned,protected=excluded.protected`, now, scannedCards, protectedCards)
 	rows, err = db.DB.Query("SELECT alert_key FROM automation_alerts WHERE alert_key LIKE 'card-renewal:%' AND resolved=0")
 	if err != nil {
 		return

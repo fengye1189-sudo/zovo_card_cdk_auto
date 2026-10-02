@@ -18,6 +18,9 @@ func initOperationsDigest() error {
  id INTEGER PRIMARY KEY CHECK(id=1),balance_minor INTEGER NOT NULL,checked_at INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS operations_wallet_probe(
  id INTEGER PRIMARY KEY CHECK(id=1),consecutive_failures INTEGER NOT NULL DEFAULT 0,last_failure_at INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS operations_renewal_scan(
+ id INTEGER PRIMARY KEY CHECK(id=1),checked_at INTEGER NOT NULL DEFAULT 0,
+ scanned INTEGER NOT NULL DEFAULT 0,protected INTEGER NOT NULL DEFAULT 0);
 INSERT OR IGNORE INTO operations_wallet_probe(id) VALUES(1)`)
 	return err
 }
@@ -74,11 +77,6 @@ func queueOperationsDigest(ctx context.Context, now time.Time) {
 	if err != nil {
 		return
 	}
-	// Healthy operation is intentionally silent. The bot is reserved for
-	// actionable conditions, per the owner's notification preference.
-	if actionableNotificationAlerts(now.Unix()) == 0 {
-		return
-	}
 	balanceText := "暂未取得，请人工核查"
 	var balance, at int64
 	if db.DB.QueryRowContext(ctx, "SELECT balance_minor,checked_at FROM operations_wallet_snapshot WHERE id=1").Scan(&balance, &at) == nil {
@@ -95,7 +93,12 @@ func queueOperationsDigest(ctx context.Context, now time.Time) {
 	if err = db.DB.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount_minor),0) FROM automation_money WHERE created_at>=? AND state='balance_verified'", now.Unix()-86400).Scan(&funding); err != nil {
 		return
 	}
-	message := fmt.Sprintf("📋 枫叶兑换站 · 每日运行摘要\n%s（曼谷时间）\n\n自动任务心跳正常：%t\n自动资金操作暂停：%t\n上游可消费余额：%s\n\n过去24小时提交：%d 单，其中已完成 %d 单、失败 %d 单\n当前在途：%d 单，待核对：%d 单\n过去24小时发起且已核查到账的开卡/补款本金：$%.2f（不含手续费）\n候选卡：%d 张／已选 %d 张\n未解除异常：%d 条\n最近本机备份校验：%s\n\n本摘要不是独立离线监测；服务器停机时无法发送。", local.Format("2006-01-02 15:04"), report.HeartbeatOK, report.Paused, balanceText, report.Submitted24h, report.Completed24hCohort, report.Failed24hCohort, report.Outstanding, report.Review, float64(funding)/100, report.CandidateCards, report.SelectedCards, report.ActiveAlerts, backup)
+	renewalText := "尚未完成首次扫描"
+	var renewalAt, renewalScanned, renewalProtected int64
+	if db.DB.QueryRowContext(ctx, "SELECT checked_at,scanned,protected FROM operations_renewal_scan WHERE id=1").Scan(&renewalAt, &renewalScanned, &renewalProtected) == nil {
+		renewalText = fmt.Sprintf("%d 张卡，保护 %d 张（最近检查 %s；下次约 %s）", renewalScanned, renewalProtected, time.Unix(renewalAt, 0).In(operationsBangkok).Format("01-02 15:04"), time.Unix(renewalAt+21600, 0).In(operationsBangkok).Format("01-02 15:04"))
+	}
+	message := fmt.Sprintf("📋 枫叶兑换站 · 每日运行摘要\n%s（曼谷时间）\n\n自动任务心跳正常：%t\n自动资金操作暂停：%t\n上游可消费余额：%s\n\n续费保护扫描：%s\n\n过去24小时提交：%d 单，其中已完成 %d 单、失败 %d 单\n当前在途：%d 单，待核对：%d 单\n过去24小时发起且已核查到账的开卡/补款本金：$%.2f（不含手续费）\n候选卡：%d 张／已选 %d 张\n未解除异常：%d 条\n最近本机备份校验：%s\n\n本摘要不是独立离线监测；服务器停机时无法发送。", local.Format("2006-01-02 15:04"), report.HeartbeatOK, report.Paused, balanceText, renewalText, report.Submitted24h, report.Completed24hCohort, report.Failed24hCohort, report.Outstanding, report.Review, float64(funding)/100, report.CandidateCards, report.SelectedCards, report.ActiveAlerts, backup)
 	id := localHash("daily-digest|" + local.Format("2006-01-02"))
 	// One daily snapshot across restarts. Requeue only if an unsent message was
 	// cancelled by an explicit destination/configuration change.
