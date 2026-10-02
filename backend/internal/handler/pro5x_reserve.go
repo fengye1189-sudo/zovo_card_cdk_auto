@@ -201,6 +201,12 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 			return false
 		}
 		amount := pro5xInitialMinor - balance
+		// Zovo requires a minimum USD 10 recharge. If the card is just below
+		// the 5X safety target, top up the minimum instead of rejecting the
+		// card; the resulting balance may be slightly above the target.
+		if amount < 1000 {
+			amount = 1000
+		}
 		product, ok := productMap[card.Product]
 		cost, costOK := productCost(product, amount, false)
 		if !ok || !costOK || product.RechargeFee == nil || *product.RechargeFee != 0 {
