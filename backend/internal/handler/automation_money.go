@@ -304,9 +304,10 @@ func maintainAutomationCards(ctx context.Context) {
 	// reconciled in this cycle. Even when it is confirmed, defer any new funding
 	// decision until the next cycle so one delayed observation cannot trigger
 	// back-to-back spending on the same card.
-	if pending > 0 || uncertain > 0 {
-		return
-	}
+	hasMoneyHold := pending > 0 || uncertain > 0
+	// A stale operation on another card must not prevent the Pro 5X reserve
+	// from rotating to a different healthy card. Ordinary funding remains
+	// paused below until all existing holds are reconciled.
 	if dedicatedMoneyBlocked() {
 		return
 	}
@@ -331,6 +332,9 @@ func maintainAutomationCards(ctx context.Context) {
 	// Chile orders. A claimed reserve is replenished instead of opening another
 	// card for the next order.
 	if maintainPro5xReserve(ctx, cli, inventory, p, version, scope, productMap, now) {
+		return
+	}
+	if hasMoneyHold {
 		return
 	}
 	reconcileRetiredCards(inventory, now)

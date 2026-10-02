@@ -231,10 +231,10 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 			(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
 			SELECT ?,'pro5x_reserve_topup',?,?,?,?,?,'inflight',?
 			WHERE COALESCE((SELECT SUM(reserved_minor) FROM automation_money WHERE created_at>?),0)+?<=?
-			AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending'))
+			AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND (card_id=? OR result_card_id=?))
 			AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?)
 			AND EXISTS(SELECT 1 FROM pro5x_card_reserve WHERE id=1 AND state='empty')`,
-			operationID, reuseID, amount, cost, balance, scope, now, now-86400, cost, dailyBudget, policyVersion)
+			operationID, reuseID, amount, cost, balance, scope, now, now-86400, cost, dailyBudget, reuseID, reuseID, policyVersion)
 		if txErr != nil {
 			return false
 		}
