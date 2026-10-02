@@ -95,6 +95,7 @@
       </div>
       <div class="sc-hint">查看健康、库存与成本预览</div>
       <div v-if="providerCheckedAt" class="sc-hint">最近检查：{{ formatProviderTime(providerCheckedAt) }}</div>
+      <el-tag v-if="providerStale" class="mt-2" type="warning" effect="plain">数据可能已过期，请刷新</el-tag>
     </button>
 
     <div class="flex flex-wrap gap-2">
@@ -268,6 +269,7 @@ const costEventCount = ref(0)
 const providerItems = ref<any[]>([])
 const providerHealthItems = ref<any[]>([])
 const providerCheckedAt = ref(0)
+const providerStale = computed(() => providerCheckedAt.value > 0 && Math.floor(Date.now() / 1000) - providerCheckedAt.value > 600)
 const providerHealthy = ref<boolean | null>(null)
 const providerError = ref('')
 
