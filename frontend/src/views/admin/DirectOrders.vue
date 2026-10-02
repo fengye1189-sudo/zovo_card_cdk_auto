@@ -5,6 +5,7 @@
       <el-button :loading="loading" :disabled="acting" @click="load(page)">刷新订单</el-button>
     </div>
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
+    <el-alert v-if="cashSyncError" :title="cashSyncError" type="warning" :closable="false" show-icon />
     <div class="card space-y-4">
       <div class="flex flex-wrap gap-3">
         <el-input v-model="search" placeholder="在本页搜索邮箱、订单号或卡片尾号" clearable aria-label="搜索本页订单" class="!max-w-sm" />
@@ -50,7 +51,7 @@ import { computed, onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 type Order=Record<string,any>
-const rows=ref<Order[]>([]),total=ref(0),apiTotal=ref(0),page=ref(1),search=ref(''),filter=ref(''),loading=ref(false),error=ref('')
+const rows=ref<Order[]>([]),total=ref(0),apiTotal=ref(0),page=ref(1),search=ref(''),filter=ref(''),loading=ref(false),error=ref(''),cashSyncError=ref('')
 const detail=ref<{order:Order;events:Order[]}|null>(null),showDetail=ref(false),detailLoading=ref(false),detailError=ref(''),acting=ref(false)
 const failed=['declined','failed_precharge','failed','requires_action']
 const terminal=['completed','declined','failed_precharge','failed','cancelled']
@@ -67,7 +68,7 @@ function newestFirst(a:Order,b:Order){
  if(Number.isFinite(timeDiff) && timeDiff!==0)return timeDiff
  return Number(b.id||0)-Number(a.id||0)
 }
-async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';try{const data=await api('?page='+next);const apiRows=Array.isArray(data.list)?data.list:[];const syncedRows=Array.isArray(data.synced)?data.synced:[];rows.value=(next===1?[...syncedRows,...apiRows]:apiRows).sort(newestFirst);apiTotal.value=Number(data.total||0);total.value=apiTotal.value+Number(data.synced_total||0);page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
+async function load(next=page.value){if(loading.value)return;loading.value=true;error.value='';cashSyncError.value='';try{const data=await api('?page='+next);const apiRows=Array.isArray(data.list)?data.list:[];const syncedRows=Array.isArray(data.synced)?data.synced:[];rows.value=(next===1?[...syncedRows,...apiRows]:apiRows).sort(newestFirst);apiTotal.value=Number(data.total||0);total.value=apiTotal.value+Number(data.synced_total||0);cashSyncError.value=typeof data.cash_sync_error==='string'?data.cash_sync_error:'';page.value=next}catch(e:any){error.value=e.message}finally{loading.value=false}}
 async function open(id:number){if(detailLoading.value)return;showDetail.value=true;detail.value=null;detailError.value='';detailLoading.value=true;try{detail.value=await api('/'+id)}catch(e:any){detailError.value=e.message}finally{detailLoading.value=false}}
 async function act(action:'cancel'|'cancel-renewal') {
  if(acting.value || !detail.value)return
