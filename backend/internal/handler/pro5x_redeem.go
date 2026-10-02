@@ -104,8 +104,12 @@ func startPreparedPro5x(c *gin.Context, r localCode, token, pf string, credentia
 // transient opening/funding states; review/unknown states remain fail-closed
 // so an uncertain card operation can never cause a duplicate payment.
 func waitForPro5xReserve(ctx context.Context) (pro5xReserve, error) {
-	const attempts = 30
+	// A temporary top-up can take a couple of minutes to settle upstream.
+	// Polling only for 60 seconds made a successful top-up look like a failed
+	// redemption and sent the customer back to the form.
+	const attempts = 60
 	woken := false
+	cli := cardplatform.NewFromSettings()
 	for i := 0; i < attempts; i++ {
 		reserve, err := loadPro5xReserve()
 		if err != nil {
@@ -113,6 +117,24 @@ func waitForPro5xReserve(ctx context.Context) (pro5xReserve, error) {
 		}
 		if reserve.State == "ready" {
 			return reserve, nil
+		}
+		// The background verifier normally performs this transition. During a
+		// customer request, verify the live card balance as well so a completed
+		// top-up is consumed immediately instead of waiting for the next
+		// scheduler tick.
+		if reserve.State == "funding" && reserve.CardID > 0 && reserve.MoneyID != "" {
+			if inventory, inventoryErr := automationInventory(ctx, cli); inventoryErr == nil {
+				if balance, ok := findInventoryCard(inventory, reserve.CardID); ok && balance >= pro5xInitialMinor {
+					_, _ = db.DB.Exec("UPDATE automation_money SET state='balance_verified' WHERE id=? AND state IN ('inflight','pending')", reserve.MoneyID)
+					reconcilePro5xReserve(inventory)
+					if refreshed, loadErr := loadPro5xReserve(); loadErr == nil {
+						reserve = refreshed
+						if reserve.State == "ready" {
+							return reserve, nil
+						}
+					}
+				}
+			}
 		}
 		if (reserve.State == "empty" || reserve.State == "review") && !woken {
 			// The money maintainer normally wakes every 30 seconds. A customer
@@ -123,7 +145,7 @@ func waitForPro5xReserve(ctx context.Context) (pro5xReserve, error) {
 		select {
 		case <-ctx.Done():
 			return reserve, ctx.Err()
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 		}
 	}
 	return loadPro5xReserve()
