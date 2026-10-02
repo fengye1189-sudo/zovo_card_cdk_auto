@@ -111,10 +111,10 @@ func waitForPro5xReserve(ctx context.Context) (pro5xReserve, error) {
 		if err != nil {
 			return reserve, err
 		}
-		if reserve.State == "ready" || reserve.State == "review" {
+		if reserve.State == "ready" {
 			return reserve, nil
 		}
-		if reserve.State == "empty" && !woken {
+		if (reserve.State == "empty" || reserve.State == "review") && !woken {
 			// The money maintainer normally wakes every 30 seconds. A customer
 			// redeem should not race that scheduler and receive a false failure.
 			_, _ = db.DB.Exec("UPDATE automation_runtime SET money_after=0 WHERE id=1")

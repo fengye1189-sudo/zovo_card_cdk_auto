@@ -132,7 +132,28 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	}
 	reserve, err := loadPro5xReserve()
 	if err != nil || reserve.State != "empty" {
-		return false
+		if err != nil || reserve.State != "review" {
+			return false
+		}
+	}
+	// A reviewed card is isolated by its durable money/lifecycle evidence, but
+	// it must not block every other healthy card from becoming the next reserve.
+	// Keep its id out of this selection pass, then hand the reserve slot to a
+	// different card. Unknown money holds continue to exclude the old card.
+	excludedReviewID := int64(0)
+	if reserve.State == "review" {
+		excludedReviewID = reserve.CardID
+		result, clearErr := db.DB.Exec(`UPDATE pro5x_card_reserve
+			SET card_id=0,money_id='',state='empty',updated_at=?
+			WHERE id=1 AND state='review'`, now)
+		if clearErr != nil {
+			return false
+		}
+		changed, _ := result.RowsAffected()
+		if changed != 1 {
+			return false
+		}
+		reserve.State = "empty"
 	}
 	// Select from the complete live inventory instead of a single historical
 	// Pro 5X card. A card is eligible only when it is active, has a known
@@ -142,7 +163,7 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	lowestBalance := int64(1<<62 - 1)
 	var selected cardplatform.CardChoice
 	for _, candidate := range inventory {
-		if candidate.ID <= 0 || candidate.Status != "ACTIVE" || productMap[candidate.Product].Code == "" {
+		if candidate.ID <= 0 || candidate.ID == excludedReviewID || candidate.Status != "ACTIVE" || productMap[candidate.Product].Code == "" {
 			continue
 		}
 		balance, ok := usdMinor(candidate.Balance)
