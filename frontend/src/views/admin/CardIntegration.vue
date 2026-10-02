@@ -235,7 +235,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 
@@ -483,6 +483,7 @@ async function loadInsights(refresh = false) {
 }
 
 async function loadProviderPreview() {
+  if (loadingProvider.value) return
   loadingProvider.value = true
   providerError.value = ''
   try {
@@ -546,10 +547,17 @@ function openProviderDialog() {
   if (providerHealthy.value === null) loadProviderPreview()
 }
 
+let providerRefreshTimer: ReturnType<typeof setInterval> | undefined
+
 onMounted(async () => {
   await loadSettings()
   await loadNetwork()
   await loadProviderPreview()
+  providerRefreshTimer = setInterval(loadProviderPreview, 5 * 60 * 1000)
+})
+
+onUnmounted(() => {
+  if (providerRefreshTimer) clearInterval(providerRefreshTimer)
 })
 </script>
 
