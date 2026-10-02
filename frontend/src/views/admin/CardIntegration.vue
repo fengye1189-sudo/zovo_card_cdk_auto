@@ -88,11 +88,38 @@
       </button>
     </div>
 
+    <button type="button" class="status-card w-full" @click="openProviderDialog">
+      <div class="sc-label">Provider 路由状态</div>
+      <div class="sc-value" :class="providerHealthy === true ? 'ok' : providerHealthy === false ? 'bad' : ''">
+        {{ providerHealthy === true ? '有可用上游' : providerHealthy === false ? '暂无可用上游' : '未检测' }}
+      </div>
+      <div class="sc-hint">查看健康、库存与成本预览</div>
+    </button>
+
     <div class="flex flex-wrap gap-2">
       <router-link class="btn-primary" to="/ops/cdkeys">返回卡密与订单</router-link>
     </div>
 
     <!-- 连通详情弹窗 -->
+    <el-dialog v-model="dlgProvider" title="Provider 路由预览" width="620px" align-center destroy-on-close>
+      <el-alert v-if="providerError" type="warning" :closable="false" :title="providerError" />
+      <el-table v-else :data="providerItems" empty-text="暂无可用报价">
+        <el-table-column prop="provider" label="上游" width="130" />
+        <el-table-column prop="product" label="商品" width="120" />
+        <el-table-column label="成本" width="120">
+          <template #default="{ row }">{{ row.currency }} {{ (Number(row.cost_minor || 0) / 100).toFixed(2) }}</template>
+        </el-table-column>
+        <el-table-column prop="stock" label="库存" width="90" />
+        <el-table-column label="状态">
+          <template #default="{ row }"><el-tag type="success" effect="plain">可用</el-tag></template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="dlgProvider = false">关闭</el-button>
+        <el-button type="primary" :loading="loadingProvider" @click="loadProviderPreview">刷新预览</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="dlgStatus" title="连通检测" width="480px" align-center destroy-on-close>
       <el-result
         :icon="pingOk ? 'success' : 'error'"
@@ -218,6 +245,7 @@ const loadingPlans = ref(false)
 const loadingBal = ref(false)
 const loadingNet = ref(false)
 const loadingInsights = ref(false)
+const loadingProvider = ref(false)
 
 const egressIp = ref('')
 const pingOk = ref<boolean | null>(null)
@@ -229,11 +257,15 @@ const plansVersion = ref<number | null>(null)
 const insightAccount = ref<Record<string, any>>({})
 const usageCards = ref<any[]>([])
 const costEventCount = ref(0)
+const providerItems = ref<any[]>([])
+const providerHealthy = ref<boolean | null>(null)
+const providerError = ref('')
 
 const dlgStatus = ref(false)
 const dlgBal = ref(false)
 const dlgPlans = ref(false)
 const dlgInsights = ref(false)
+const dlgProvider = ref(false)
 
 const keyHint = computed(() =>
   hints.card_api_key_configured ? `已配置 ${hints.card_api_key_hint || ''}`.trim() : '粘贴 sk_…',
@@ -438,6 +470,24 @@ async function loadInsights(refresh = false) {
   }
 }
 
+async function loadProviderPreview() {
+  loadingProvider.value = true
+  providerError.value = ''
+  try {
+    const r = await authFetch('/api/v1/admin/providers/preview?product=plus')
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) throw new Error(d.error || 'Provider 预览失败')
+    providerItems.value = Array.isArray(d.candidates) ? d.candidates : []
+    providerHealthy.value = providerItems.value.length > 0
+  } catch (e: any) {
+    providerItems.value = []
+    providerHealthy.value = false
+    providerError.value = e?.message || 'Provider 预览失败'
+  } finally {
+    loadingProvider.value = false
+  }
+}
+
 async function runAllChecks() {
   busy.value = true
   try {
@@ -467,6 +517,10 @@ function openPlansDialog() {
 function openInsightsDialog() {
   dlgInsights.value = true
   if (!Object.keys(insightAccount.value).length) loadInsights(false)
+}
+function openProviderDialog() {
+  dlgProvider.value = true
+  if (providerHealthy.value === null) loadProviderPreview()
 }
 
 onMounted(async () => {
