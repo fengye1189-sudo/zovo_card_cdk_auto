@@ -94,6 +94,7 @@
         {{ providerHealthy === true ? '有可用上游' : providerHealthy === false ? '暂无可用上游' : '未检测' }}
       </div>
       <div class="sc-hint">查看健康、库存与成本预览</div>
+      <div v-if="providerCheckedAt" class="sc-hint">最近检查：{{ formatProviderTime(providerCheckedAt) }}</div>
     </button>
 
     <div class="flex flex-wrap gap-2">
@@ -266,6 +267,7 @@ const usageCards = ref<any[]>([])
 const costEventCount = ref(0)
 const providerItems = ref<any[]>([])
 const providerHealthItems = ref<any[]>([])
+const providerCheckedAt = ref(0)
 const providerHealthy = ref<boolean | null>(null)
 const providerError = ref('')
 
@@ -491,6 +493,7 @@ async function loadProviderPreview() {
     if (!previewResponse.ok) throw new Error(d.error || 'Provider 预览失败')
     providerItems.value = Array.isArray(d.candidates) ? d.candidates : []
     providerHealthItems.value = Array.isArray(health.items) ? health.items : []
+    providerCheckedAt.value = Number(health.checked_at || Math.floor(Date.now() / 1000))
     providerHealthy.value = providerItems.value.length > 0
   } catch (e: any) {
     providerItems.value = []
@@ -499,6 +502,11 @@ async function loadProviderPreview() {
   } finally {
     loadingProvider.value = false
   }
+}
+
+function formatProviderTime(ts: number) {
+  if (!ts) return '—'
+  return new Date(ts * 1000).toLocaleString()
 }
 
 async function runAllChecks() {
