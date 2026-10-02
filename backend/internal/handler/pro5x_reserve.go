@@ -179,6 +179,9 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 		if balance < pro5xInitialMinor && productMap[candidate.Product].Code == "" {
 			continue
 		}
+		if protected, _ := cardRenewalProtected(candidate.ID); protected {
+			continue
+		}
 		if held, heldErr := localCardMoneyHeld(candidate.ID); heldErr != nil || held {
 			continue
 		}

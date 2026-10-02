@@ -329,7 +329,9 @@ func watchOrder(ctx context.Context, id int64) {
 		// while it settles, but keep the mutation retry lock at 15 minutes.
 		next = now + 60
 		if renewalConfirmed {
-			next = now + 86400
+			// Recheck periodically so a customer who later re-enables renewal is
+			// detected and the card is protected before automation uses it.
+			next = now + 21600
 		}
 	}
 	if state == "declined" || state == "failed_precharge" || state == "failed" || state == "cancelled" {

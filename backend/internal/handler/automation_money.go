@@ -81,6 +81,30 @@ type cardRenewalState struct {
 	lastActivated int64
 }
 
+// A card is protected until its latest consumed order explicitly confirms
+// that renewal is cancelled (or that no renewal was requested).
+func cardRenewalProtected(cardID int64) (bool, string) {
+	var renewal string
+	err := db.DB.QueryRow(`SELECT w.renewal
+		FROM automation_watch w JOIN local_cdks c ON c.id=w.local_id
+		WHERE c.card_id=? AND c.status='consumed'
+		ORDER BY w.checked_at DESC,w.local_id DESC LIMIT 1`, cardID).Scan(&renewal)
+	if err == sql.ErrNoRows {
+		return false, ""
+	}
+	if err != nil {
+		return true, "查询失败"
+	}
+	switch strings.ToLower(strings.TrimSpace(renewal)) {
+	case "success", "not_requested":
+		return false, renewal
+	case "":
+		return true, "未确认"
+	default:
+		return true, renewal
+	}
+}
+
 func loadCardRenewalStates(inventory []cardplatform.CardChoice, now int64) map[int64]cardRenewalState {
 	states := make(map[int64]cardRenewalState, len(inventory))
 	for _, card := range inventory {
@@ -121,7 +145,41 @@ func maintainCardRenewalAlerts(now int64) {
 		autoAlert(key, 0, fmt.Sprintf("支付卡 #%d 有 %d 个客户将在约 %s 内到期（%s）；卡片仍保持可支付，请确认是否补款并继续使用。", cardID, count, time.Until(time.Unix(due, 0)).Round(time.Hour), emails))
 	}
 	rows.Close()
+	// Surface cards whose latest renewal result is not explicitly cancelled.
+	// Such cards are protected from temporary 5X and ordinary health-card
+	// funding until the upstream status is confirmed.
+	rows, err = db.DB.Query(`SELECT s.card_id FROM automation_inventory_snapshot s
+		JOIN automation_card_lifecycle l ON l.card_id=s.card_id AND l.retire_state='active'
+		WHERE s.scope=? AND s.present=1`, scope)
+	if err == nil {
+		for rows.Next() {
+			var cardID int64
+			if rows.Scan(&cardID) != nil {
+				continue
+			}
+			protected, status := cardRenewalProtected(cardID)
+			if !protected {
+				continue
+			}
+			key := fmt.Sprintf("card-renewal-state:%d", cardID)
+			active[key] = true
+			autoAlert(key, 0, fmt.Sprintf("支付卡 #%d 的自动续费状态为“%s”，已保护；不会用于临时 5X 或普通补款。", cardID, status))
+		}
+		rows.Close()
+	}
 	rows, err = db.DB.Query("SELECT alert_key FROM automation_alerts WHERE alert_key LIKE 'card-renewal:%' AND resolved=0")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		if rows.Scan(&key) == nil && !active[key] {
+			autoResolve(key)
+		}
+	}
+	rows.Close()
+	rows, err = db.DB.Query("SELECT alert_key FROM automation_alerts WHERE alert_key LIKE 'card-renewal-state:%' AND resolved=0")
 	if err != nil {
 		return
 	}
@@ -474,6 +532,9 @@ func maintainAutomationCards(ctx context.Context) {
 				return left.nextDue > right.nextDue
 			})
 			for _, card := range inventory {
+				if protected, _ := cardRenewalProtected(card.ID); protected {
+					continue
+				}
 				state := renewalStates[card.ID]
 				if state.lastActivated > 0 && now-state.lastActivated < int64(cardPostChargeTopupDelay/time.Second) {
 					continue
