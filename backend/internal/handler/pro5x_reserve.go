@@ -161,13 +161,14 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	// another customer order. This makes every safe card a temporary 5X card.
 	reuseID := int64(0)
 	lowestBalance := int64(1<<62 - 1)
+	selectedReady := false
 	var selected cardplatform.CardChoice
 	for _, candidate := range inventory {
 		if candidate.ID <= 0 || candidate.ID == excludedReviewID || candidate.Status != "ACTIVE" || productMap[candidate.Product].Code == "" {
 			continue
 		}
 		balance, ok := usdMinor(candidate.Balance)
-		if !ok || balance > pro5xInitialMinor {
+		if !ok {
 			continue
 		}
 		if held, heldErr := localCardMoneyHeld(candidate.ID); heldErr != nil || held {
@@ -177,8 +178,10 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 		if db.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM local_cdks WHERE card_id=? AND status IN ('reserved','review'))`, candidate.ID).Scan(&busy) != nil || busy != 0 {
 			continue
 		}
-		if balance < lowestBalance {
+		candidateReady := balance >= pro5xInitialMinor
+		if reuseID == 0 || (candidateReady && !selectedReady) || (candidateReady == selectedReady && balance < lowestBalance) {
 			lowestBalance = balance
+			selectedReady = candidateReady
 			reuseID = candidate.ID
 			selected = candidate
 		}
@@ -186,11 +189,11 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	if reuseID > 0 {
 		card := selected
 		balance, balanceOK := usdMinor(card.Balance)
-		if !balanceOK || balance > pro5xInitialMinor {
+		if !balanceOK {
 			autoAlert("pro5x_reserve", 0, fmt.Sprintf("临时 Pro 5X 卡 #%d 的余额无法核对，未开新卡也未补款。", reuseID))
 			return true
 		}
-		if balance == pro5xInitialMinor {
+		if balance >= pro5xInitialMinor {
 			result, updateErr := db.DB.Exec(`UPDATE pro5x_card_reserve
 				SET card_id=?,money_id='',state='ready',created_at=?,updated_at=?
 				WHERE id=1 AND state='empty'`, reuseID, now, now)
