@@ -11,6 +11,26 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
+func (e *APIError) FailureClass() provider.FailureClass {
+	if e == nil {
+		return provider.FailureUnknown
+	}
+	switch {
+	case e.HTTPStatus == 429:
+		return provider.FailureRateLimited
+	case e.HTTPStatus == 401 || e.HTTPStatus == 403:
+		return provider.FailureConfig
+	case e.HTTPStatus >= 500:
+		return provider.FailureTransient
+	case e.HTTPStatus >= 400:
+		return provider.FailureRejected
+	default:
+		return provider.FailureUnknown
+	}
+}
+
+func (e *APIError) FailureRetryAfter() int { return 0 }
+
 // ProviderAdapter exposes the existing Zovo client through the shared
 // provider contract. It is an opt-in wrapper; current handlers continue to
 // call Client directly until routing is migrated deliberately.

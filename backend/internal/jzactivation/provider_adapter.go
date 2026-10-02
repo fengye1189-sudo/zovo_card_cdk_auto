@@ -8,6 +8,31 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
+func (e *ResponseError) FailureClass() provider.FailureClass {
+	if e == nil {
+		return provider.FailureUnknown
+	}
+	switch {
+	case e.HTTPStatus == 429:
+		return provider.FailureRateLimited
+	case e.HTTPStatus == 401 || e.HTTPStatus == 403 || e.Code == "channel_disabled":
+		return provider.FailureConfig
+	case e.HTTPStatus >= 500:
+		return provider.FailureTransient
+	case e.HTTPStatus >= 400:
+		return provider.FailureRejected
+	default:
+		return provider.FailureUnknown
+	}
+}
+
+func (e *ResponseError) FailureRetryAfter() int {
+	if e == nil {
+		return 0
+	}
+	return e.RetryAfter
+}
+
 // ProviderAdapter exposes JZ activation as a provider without changing the
 // existing managed-activation handlers. JZ is task-oriented rather than a
 // generic card/order API, so unsupported operations remain explicit.
