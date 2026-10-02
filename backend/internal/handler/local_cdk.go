@@ -256,6 +256,16 @@ func localAvailableCards(c *gin.Context, cli *cardplatform.Client, s localSettin
 	}
 	available := make([]int64, 0, len(ids))
 	for _, id := range ids {
+		// A card held as the verified Pro 5X handoff reserve is intentionally
+		// unavailable to ordinary products until that reserve is claimed. This
+		// prevents a Plus order from consuming the balance needed for a 5X order.
+		var pro5xReserveBusy int
+		if e = db.DB.QueryRow("SELECT EXISTS(SELECT 1 FROM pro5x_card_reserve WHERE card_id=? AND state IN ('ready','opening','funding','review'))", id).Scan(&pro5xReserveBusy); e != nil {
+			return nil, e
+		}
+		if pro5xReserveBusy != 0 {
+			continue
+		}
 		// Plus/PULS is a PHP/Philippines product. Never submit it with an
 		// explicitly Chile-marked card; if no PHP card remains, fail closed
 		// instead of silently accepting the higher-cost CL route.

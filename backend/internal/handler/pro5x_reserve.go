@@ -134,47 +134,39 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	if err != nil || reserve.State != "empty" {
 		return false
 	}
-	// Reuse the most recently completed Pro 5X card as the single shared
-	// Philippines/Chile reserve. All older Pro 5X cards remain ordinary cards.
-	rows, err := db.DB.Query(`SELECT card_id FROM pro5x_card_policy
-		WHERE completed_uses>0 ORDER BY updated_at DESC,card_id LIMIT 1`)
-	if err != nil {
-		return false
-	}
+	// Select from the complete live inventory instead of a single historical
+	// Pro 5X card. A card is eligible only when it is active, has a known
+	// balance, is not already being funded/reconciled, and is not attached to
+	// another customer order. This makes every safe card a temporary 5X card.
 	reuseID := int64(0)
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) != nil {
+	lowestBalance := int64(1<<62 - 1)
+	var selected cardplatform.CardChoice
+	for _, candidate := range inventory {
+		if candidate.ID <= 0 || candidate.Status != "ACTIVE" || productMap[candidate.Product].Code == "" {
 			continue
 		}
-		for _, card := range inventory {
-			if card.ID == id && card.Status == "ACTIVE" {
-				reuseID = id
-				break
-			}
+		balance, ok := usdMinor(candidate.Balance)
+		if !ok || balance > pro5xInitialMinor {
+			continue
 		}
-		if reuseID > 0 {
-			break
+		if held, heldErr := localCardMoneyHeld(candidate.ID); heldErr != nil || held {
+			continue
 		}
-	}
-	if err = rows.Err(); err != nil {
-		_ = rows.Close()
-		return false
-	}
-	if err = rows.Close(); err != nil {
-		return false
+		var busy int
+		if db.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM local_cdks WHERE card_id=? AND status IN ('reserved','review'))`, candidate.ID).Scan(&busy) != nil || busy != 0 {
+			continue
+		}
+		if balance < lowestBalance {
+			lowestBalance = balance
+			reuseID = candidate.ID
+			selected = candidate
+		}
 	}
 	if reuseID > 0 {
-		var card cardplatform.CardChoice
-		for _, candidate := range inventory {
-			if candidate.ID == reuseID {
-				card = candidate
-				break
-			}
-		}
+		card := selected
 		balance, balanceOK := usdMinor(card.Balance)
 		if !balanceOK || balance > pro5xInitialMinor {
-			autoAlert("pro5x_reserve", 0, fmt.Sprintf("Pro 5X 三次专用卡 #%d 的余额无法核对，未开新卡也未补款。", reuseID))
+			autoAlert("pro5x_reserve", 0, fmt.Sprintf("临时 Pro 5X 卡 #%d 的余额无法核对，未开新卡也未补款。", reuseID))
 			return true
 		}
 		if balance == pro5xInitialMinor {
@@ -191,13 +183,13 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 		product, ok := productMap[card.Product]
 		cost, costOK := productCost(product, amount, false)
 		if !ok || !costOK || product.RechargeFee == nil || *product.RechargeFee != 0 {
-			autoAlert("pro5x_reserve", 0, fmt.Sprintf("Pro 5X 三次专用卡 #%d 的补款费率或金额限制不符合规则，未补款。", reuseID))
+			autoAlert("pro5x_reserve", 0, fmt.Sprintf("临时 Pro 5X 卡 #%d 的补款费率或金额限制不符合规则，未补款。", reuseID))
 			return true
 		}
 		spendable, spendErr := cli.AutomationSpendable(ctx)
 		wallet, walletOK := usdMinor(spendable)
 		if spendErr != nil || !walletOK || wallet-cost < p.WalletFloor {
-			autoAlert("pro5x_reserve", 0, fmt.Sprintf("平台可消费余额不足以补充 Pro 5X 三次专用卡 #%d，未补款。", reuseID))
+			autoAlert("pro5x_reserve", 0, fmt.Sprintf("平台可消费余额不足以补充临时 Pro 5X 卡 #%d，未补款。", reuseID))
 			return true
 		}
 		operationID, randomErr := localRandom()
@@ -227,7 +219,7 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 		}
 		changed, _ := result.RowsAffected()
 		if changed != 1 {
-			autoAlert("pro5x_reserve", 0, "Pro 5X 三次专用卡受每日预算或待核对资金操作限制，本轮未补款。")
+			autoAlert("pro5x_reserve", 0, "临时 Pro 5X 卡受每日预算或待核对资金操作限制，本轮未补款。")
 			return true
 		}
 		result, txErr = tx.Exec(`UPDATE pro5x_card_reserve
@@ -248,7 +240,7 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 		_, _ = db.DB.Exec("UPDATE automation_money SET state=? WHERE id=?", state, operationID)
 		if state == "unknown" {
 			_, _ = db.DB.Exec("UPDATE pro5x_card_reserve SET state='review',updated_at=? WHERE id=1 AND money_id=?", time.Now().Unix(), operationID)
-			autoAlert("pro5x_reserve", 0, "Pro 5X 三次专用卡补款结果不明，请到 Zovo 核对；系统不会自动重试。")
+			autoAlert("pro5x_reserve", 0, "临时 Pro 5X 卡补款结果不明，请到上游核对；系统不会自动重试。")
 		} else {
 			autoResolve("pro5x_reserve")
 		}
