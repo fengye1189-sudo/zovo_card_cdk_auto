@@ -114,6 +114,13 @@
           <template #default="{ row }"><el-tag type="success" effect="plain">可用</el-tag></template>
         </el-table-column>
       </el-table>
+      <div v-if="providerHealthItems.length" class="mt-4 space-y-2">
+        <div class="text-sm font-semibold text-ink">上游健康状态</div>
+        <div v-for="item in providerHealthItems" :key="item.provider" class="flex items-center justify-between rounded-lg border p-2">
+          <span>{{ item.provider }}</span>
+          <el-tag :type="item.healthy ? 'success' : 'danger'" effect="plain">{{ item.healthy ? '正常' : item.message || '异常' }}</el-tag>
+        </div>
+      </div>
       <template #footer>
         <el-button @click="dlgProvider = false">关闭</el-button>
         <el-button type="primary" :loading="loadingProvider" @click="loadProviderPreview">刷新预览</el-button>
@@ -258,6 +265,7 @@ const insightAccount = ref<Record<string, any>>({})
 const usageCards = ref<any[]>([])
 const costEventCount = ref(0)
 const providerItems = ref<any[]>([])
+const providerHealthItems = ref<any[]>([])
 const providerHealthy = ref<boolean | null>(null)
 const providerError = ref('')
 
@@ -474,10 +482,15 @@ async function loadProviderPreview() {
   loadingProvider.value = true
   providerError.value = ''
   try {
-    const r = await authFetch('/api/v1/admin/providers/preview?product=plus')
-    const d = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(d.error || 'Provider 预览失败')
+    const [previewResponse, healthResponse] = await Promise.all([
+      authFetch('/api/v1/admin/providers/preview?product=plus'),
+      authFetch('/api/v1/admin/providers/health'),
+    ])
+    const d = await previewResponse.json().catch(() => ({}))
+    const health = await healthResponse.json().catch(() => ({}))
+    if (!previewResponse.ok) throw new Error(d.error || 'Provider 预览失败')
     providerItems.value = Array.isArray(d.candidates) ? d.candidates : []
+    providerHealthItems.value = Array.isArray(health.items) ? health.items : []
     providerHealthy.value = providerItems.value.length > 0
   } catch (e: any) {
     providerItems.value = []
