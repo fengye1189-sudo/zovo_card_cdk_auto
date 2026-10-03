@@ -201,6 +201,7 @@ func setupRoutes(r *gin.Engine) {
 			pubCDK.POST("/result", handler.PublicCDKResult)
 			// 刷新进度 / 任务查询：凭卡密反查本站绑定的 redemption_token
 			pubCDK.POST("/result-by-code", handler.LocalCDKLimit(), handler.PublicCDKResultByCode)
+			pubCDK.POST("/challenge-resolved", handler.PublicCDKMutationLimit(), handler.PublicManagedChallengeResolved)
 			// 代理隐藏换码：密码 + 失败未扣款 CDK → 新码
 			pubCDK.POST("/exchange", handler.PublicAgentCDKExchange)
 		}

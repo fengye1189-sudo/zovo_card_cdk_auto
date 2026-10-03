@@ -198,6 +198,15 @@
           {{ resultMessage }}
         </div>
 
+        <div v-if="activeChallenge" class="alert" style="background: var(--warn-soft, #fff7ed); color: var(--warn, #9a3412); border-color: #fdba74">
+          <p class="font-semibold">这笔兑换需要你完成一次支付验证</p>
+          <p class="text-sm mt-1">请在当前浏览器中点击按钮完成 Stripe 官方验证；验证只对本笔订单有效。</p>
+          <button class="btn-primary mt-3" type="button" :disabled="challengeBusy" @click="resolveChallenge">
+            {{ challengeBusy ? '验证处理中…' : '完成支付验证' }}
+          </button>
+          <p v-if="challengeError" class="text-sm mt-2">{{ challengeError }}</p>
+        </div>
+
         <!-- 进度步骤条（由 stage / events 推导） -->
         <div class="grid grid-cols-4 gap-2 text-center text-xs">
           <div
@@ -321,10 +330,13 @@ const resultCardLastFour = ref('')
 const resultBody = ref<any>(null)
 const timeline = ref<any[]>([])
 const polling = ref(false)
+const challengeBusy = ref(false)
+const challengeError = ref('')
 const chatGptHint = ref('')
 let pollTimer: any = null
 let missingPolls = 0
 const displayResultEmail = computed(() => resultEmail.value || account.value.email || '')
+const activeChallenge = computed(() => resultBody.value?.challenge || resultBody.value?.order?.challenge || null)
 
 const PROGRESS_KEY = 'cdk_redeem_progress_v1'
 const progressCreatedAt = ref(Date.now())
@@ -343,6 +355,7 @@ const deviceId = (() => {
 
 function saveProgress() {
   try {
+    const persistedResultBody = redactSensitiveChallenge(resultBody.value)
     const payload = {
       step: step.value,
       code: code.value,
@@ -357,7 +370,7 @@ function saveProgress() {
       resultMessage: resultMessage.value,
       resultEmail: resultEmail.value,
       resultCardLastFour: resultCardLastFour.value,
-      resultBody: resultBody.value,
+      resultBody: persistedResultBody,
       timeline: timeline.value,
       createdAt: progressCreatedAt.value,
       savedAt: Date.now(),
@@ -366,6 +379,23 @@ function saveProgress() {
   } catch {
     /* ignore quota */
   }
+}
+
+// Stripe challenge secrets are one-payment credentials. Keep the live value
+// in memory only; never place it in sessionStorage or the debug response.
+function redactSensitiveChallenge(value: any): any {
+  if (Array.isArray(value)) return value.map(redactSensitiveChallenge)
+  if (!value || typeof value !== 'object') return value
+  const copy: Record<string, any> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'challenge') {
+      // Do not persist even the challenge shape: after a reload it would
+      // look actionable while its one-time secret is already gone.
+      continue
+    }
+    copy[key] = redactSensitiveChallenge(item)
+  }
+  return copy
 }
 
 function loadProgress(): boolean {
@@ -453,9 +483,69 @@ watch(
   { deep: true },
 )
 
-const resultPretty = computed(() => JSON.stringify(resultBody.value, null, 2))
+const resultPretty = computed(() => JSON.stringify(redactSensitiveChallenge(resultBody.value), null, 2))
 const resultCanRetry = computed(() => resultCanResubmit(resultBody.value))
 const resultQueryUntil = computed(() => resultQueryDeadline(resultBody.value))
+
+let stripeLoader: Promise<any> | null = null
+function loadStripe(): Promise<any> {
+  if ((window as any).Stripe) return Promise.resolve((window as any).Stripe)
+  if (stripeLoader) return stripeLoader
+  stripeLoader = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[src="https://js.stripe.com/v3/"]') as HTMLScriptElement | null
+    if (existing) {
+      existing.addEventListener('load', () => resolve((window as any).Stripe))
+      existing.addEventListener('error', () => reject(new Error('Stripe 验证组件加载失败')))
+      return
+    }
+    const script = document.createElement('script')
+    script.src = 'https://js.stripe.com/v3/'
+    script.async = true
+    script.onload = () => (window as any).Stripe ? resolve((window as any).Stripe) : reject(new Error('Stripe 验证组件不可用'))
+    script.onerror = () => reject(new Error('Stripe 验证组件加载失败'))
+    document.head.appendChild(script)
+  })
+  return stripeLoader
+}
+
+async function resolveChallenge() {
+  const challenge = activeChallenge.value
+  const taskID = String(resultBody.value?.task_reference || resultBody.value?.order?.task_id || '').trim()
+  if (!challenge?.client_secret || !challenge?.publishable_key || !taskID || !code.value.trim()) {
+    challengeError.value = '验证信息已过期，请刷新进度后重试。'
+    return
+  }
+  challengeBusy.value = true
+  challengeError.value = ''
+  try {
+    const Stripe = await loadStripe()
+    const stripe = Stripe(challenge.publishable_key)
+    let payment = (await stripe.retrievePaymentIntent(challenge.client_secret))?.paymentIntent
+    if (payment?.status === 'requires_action') {
+      await stripe.handleNextAction({ clientSecret: challenge.client_secret })
+      payment = (await stripe.retrievePaymentIntent(challenge.client_secret))?.paymentIntent
+    }
+    if (!payment || payment.status === 'requires_action') {
+      challengeError.value = '验证尚未完成，请完成弹窗后再试。'
+      return
+    }
+    const { r, data } = await api('/api/v1/public/cdk/challenge-resolved', {
+      method: 'POST',
+      body: JSON.stringify({ cdk_code: code.value.trim(), task_id: taskID }),
+    })
+    if (!r.ok) {
+      challengeError.value = data?.error || '验证结果回传失败，请稍后再试。'
+      return
+    }
+    resultBody.value = { ...resultBody.value, challenge: null }
+    resultMessage.value = '验证已提交，正在继续处理。'
+    startPoll()
+  } catch (e: any) {
+    challengeError.value = e?.message || '验证未完成，请稍后重试。'
+  } finally {
+    challengeBusy.value = false
+  }
+}
 
 function refreshChatGptHint() {
   chatGptHint.value = '请在 ChatGPT 中硬刷新页面（Windows：Ctrl + Shift + R；Mac：⌘ + Shift + R），或退出后重新登录。若 5 分钟后仍显示免费版，请保留本页订单号和截图联系客服核对。'

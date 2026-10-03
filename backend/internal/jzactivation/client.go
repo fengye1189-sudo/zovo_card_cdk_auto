@@ -102,6 +102,68 @@ type CreateTaskResult struct {
 	Error   string `json:"error,omitempty"`
 }
 
+type AnnouncementResult struct {
+	Enabled   bool   `json:"enabled"`
+	Content   string `json:"content"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type QueueStatusResult struct {
+	Status       string `json:"status"`
+	PendingCount int    `json:"pending_count"`
+	At           string `json:"at"`
+}
+
+type Challenge struct {
+	Type           string `json:"type"`
+	ClientSecret   string `json:"client_secret"`
+	PublishableKey string `json:"publishable_key"`
+}
+
+type BatchTaskItem struct {
+	CDKCode     string `json:"cdk_code"`
+	SessionJSON string `json:"session_json"`
+	Ref         string `json:"ref,omitempty"`
+}
+
+type BatchTaskResultItem struct {
+	Index      int    `json:"index"`
+	Ref        string `json:"ref,omitempty"`
+	CDKCode    string `json:"cdk_code"`
+	Status     string `json:"status"`
+	TaskID     string `json:"task_id,omitempty"`
+	TaskStatus string `json:"task_status,omitempty"`
+	Code       string `json:"code,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+type BatchTaskResult struct {
+	BatchID   string                `json:"batch_id"`
+	Accepted  int                   `json:"accepted"`
+	Rejected  int                   `json:"rejected"`
+	Conflict  int                   `json:"conflict"`
+	Results   []BatchTaskResultItem `json:"results"`
+}
+
+type BatchLookupResult struct {
+	Tasks []TaskResult `json:"tasks"`
+}
+
+type SimpleTaskResult struct {
+	OK     bool   `json:"ok"`
+	Status string `json:"status"`
+	Code   string `json:"code,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+type RefreshResult struct {
+	Message          string `json:"message"`
+	OldCode          string `json:"old_code"`
+	NewCode          string `json:"new_code"`
+	PlanType         string `json:"plan_type"`
+	RefreshRemaining *int   `json:"refresh_remaining,omitempty"`
+}
+
 type TaskResult struct {
 	TaskID        string `json:"task_id"`
 	CDKCode       string `json:"cdk_code"`
@@ -112,8 +174,21 @@ type TaskResult struct {
 	UpdatedAt     string `json:"updated_at"`
 	CompletedAt   string `json:"completed_at,omitempty"`
 	FailureReason string `json:"failure_reason,omitempty"`
+	Challenge     *Challenge `json:"challenge,omitempty"`
 	Code          string `json:"code,omitempty"`
 	Error         string `json:"error,omitempty"`
+}
+
+func (c *Client) Ping(ctx context.Context) (map[string]any, int, error) {
+	var out map[string]any
+	status, err := c.do(ctx, http.MethodGet, "", nil, &out)
+	return out, status, err
+}
+
+func (c *Client) Announcement(ctx context.Context) (AnnouncementResult, int, error) {
+	var out AnnouncementResult
+	status, err := c.do(ctx, http.MethodGet, "/announcement", nil, &out)
+	return out, status, err
 }
 
 func (c *Client) Verify(ctx context.Context, code string) (VerifyResult, int, error) {
@@ -142,7 +217,51 @@ func (c *Client) LookupTask(ctx context.Context, code string) (TaskResult, int, 
 	return out, status, err
 }
 
+func (c *Client) RefreshCDK(ctx context.Context, code string) (RefreshResult, int, error) {
+	var out RefreshResult
+	status, err := c.do(ctx, http.MethodPost, "/recharge/refresh-cdk", map[string]string{"cdk_code": code}, &out)
+	return out, status, err
+}
+
+func (c *Client) CancelTask(ctx context.Context, code string) (SimpleTaskResult, int, error) {
+	var out SimpleTaskResult
+	status, err := c.do(ctx, http.MethodPost, "/recharge/cancel-task", map[string]string{"cdk_code": code}, &out)
+	return out, status, err
+}
+
+func (c *Client) ResolveChallenge(ctx context.Context, code, taskID string) (SimpleTaskResult, int, error) {
+	var out SimpleTaskResult
+	status, err := c.do(ctx, http.MethodPost, "/recharge/challenge-resolved", map[string]string{"cdk_code": code, "task_id": taskID}, &out)
+	return out, status, err
+}
+
+func (c *Client) CreateTasks(ctx context.Context, items []BatchTaskItem, idempotencyKey string) (BatchTaskResult, int, error) {
+	var out BatchTaskResult
+	headers := map[string]string{}
+	if strings.TrimSpace(idempotencyKey) != "" {
+		headers["Idempotency-Key"] = strings.TrimSpace(idempotencyKey)
+	}
+	status, err := c.doWithHeaders(ctx, http.MethodPost, "/partner/tasks/batch", map[string]any{"items": items}, &out, headers)
+	return out, status, err
+}
+
+func (c *Client) LookupTasks(ctx context.Context, codes []string) (BatchLookupResult, int, error) {
+	var out BatchLookupResult
+	status, err := c.do(ctx, http.MethodPost, "/lookup/tasks", map[string]any{"codes": codes}, &out)
+	return out, status, err
+}
+
+func (c *Client) QueueStatus(ctx context.Context) (QueueStatusResult, int, error) {
+	var out QueueStatusResult
+	status, err := c.do(ctx, http.MethodGet, "/recharge/queue-status", nil, &out)
+	return out, status, err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any, out any) (int, error) {
+	return c.doWithHeaders(ctx, method, path, body, out, nil)
+}
+
+func (c *Client) doWithHeaders(ctx context.Context, method, path string, body any, out any, headers map[string]string) (int, error) {
 	if !c.cfg.Enabled {
 		return 0, &ResponseError{HTTPStatus: http.StatusServiceUnavailable, Code: "channel_disabled", Message: "channel disabled"}
 	}
@@ -164,6 +283,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	}
 	if c.cfg.APIKey != "" {
 		req.Header.Set("X-API-Key", c.cfg.APIKey)
+	}
+	for key, value := range headers {
+		req.Header.Set(key, value)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {

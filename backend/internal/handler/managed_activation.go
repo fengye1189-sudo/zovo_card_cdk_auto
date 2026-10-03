@@ -297,15 +297,23 @@ func managedTaskPayload(task jzactivation.TaskResult, attempt *db.ManagedActivat
 	result := gin.H{
 		"status": safeStatus, "stage": stage, "message": message,
 		"flow":         managedFlowName,
+		"task_reference": task.TaskID,
 		"can_resubmit": canResubmit, "plan": firstNonEmpty(task.PlanType, attempt.Plan),
 		"account_email": maskEmail(firstNonEmpty(task.AccountEmail, attempt.AccountEmail)),
 		"order": gin.H{
 			"status": safeStatus, "stage": stage,
 			"plan":          firstNonEmpty(task.PlanType, attempt.Plan),
 			"account_email": maskEmail(firstNonEmpty(task.AccountEmail, attempt.AccountEmail)),
+			"task_id":       task.TaskID,
 			"created_at":    task.CreatedAt, "updated_at": task.UpdatedAt,
 			"completed_at": task.CompletedAt, "can_resubmit": canResubmit,
 		},
+	}
+	if task.Challenge != nil && strings.TrimSpace(task.Challenge.ClientSecret) != "" {
+		// The challenge is intentionally passed through only to the active
+		// customer flow; it is never logged or persisted with the Session.
+		result["challenge"] = task.Challenge
+		result["order"].(gin.H)["challenge"] = task.Challenge
 	}
 	if attempt.QueryExpiresAt > 0 {
 		result["query_expires_at"] = time.Unix(attempt.QueryExpiresAt, 0).UTC().Format(time.RFC3339)
@@ -386,4 +394,33 @@ func tryManagedResultByCode(c *gin.Context, code string) bool {
 	}
 	c.JSON(http.StatusOK, managedTaskPayload(task, attempt))
 	return true
+}
+
+// PublicManagedChallengeResolved forwards only the non-sensitive challenge
+// acknowledgement. The payment secret is handled by Stripe.js in the user's
+// browser and is never accepted or stored by MaplePass.
+func PublicManagedChallengeResolved(c *gin.Context) {
+	var body struct {
+		Code   string `json:"cdk_code"`
+		TaskID string `json:"task_id"`
+	}
+	if !localBody(c, &body) || strings.TrimSpace(body.Code) == "" || strings.TrimSpace(body.TaskID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少卡密或任务号"})
+		return
+	}
+	result, status, err := jzactivation.NewFromEnv().ResolveChallenge(c.Request.Context(), normalizePublicCDK(body.Code), strings.TrimSpace(body.TaskID))
+	if err != nil {
+		var responseErr *jzactivation.ResponseError
+		if errors.As(err, &responseErr) && responseErr.HTTPStatus >= 400 && responseErr.HTTPStatus <= 599 {
+			c.JSON(responseErr.HTTPStatus, gin.H{"code": responseErr.Code, "error": responseErr.Message})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": "验证结果暂时无法回传，请稍后重试"})
+		return
+	}
+	if status < 200 || status >= 300 {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "验证结果暂时无法回传，请稍后重试"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": firstNonEmpty(result.Status, "resolved")})
 }
