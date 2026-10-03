@@ -16,6 +16,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/handler"
 	"github.com/tuzi/cdk-recharge-system/internal/plansync"
+	"github.com/tuzi/cdk-recharge-system/internal/subscriptionautomation"
 )
 
 type Server struct {
@@ -86,6 +87,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	handler.StartCustomerExpiryNotifications(ctx)
 	handler.StartCardPlatformInsights(ctx)
 	handler.StartDirectOrderMirror(ctx)
+	subscriptionautomation.StartWatcher(ctx)
 
 	return &Server{
 		engine: engine,
