@@ -68,10 +68,10 @@ func (s *Service) Status(_ context.Context) Status {
 }
 
 type Preview struct {
-	Product   string `json:"product"`
+	Product   string   `json:"product"`
 	Providers []string `json:"providers"`
-	CanCreate bool `json:"can_create"`
-	Message   string `json:"message"`
+	CanCreate bool     `json:"can_create"`
+	Message   string   `json:"message"`
 }
 
 func (s *Service) Preview(product string) Preview {

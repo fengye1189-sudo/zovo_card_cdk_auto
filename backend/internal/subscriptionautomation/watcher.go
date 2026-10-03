@@ -29,15 +29,27 @@ func runWatcher(ctx context.Context, store *Store, providers map[string]provider
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done(): return
+		case <-ctx.Done():
+			return
 		case <-ticker.C:
 			task, err := store.ClaimDueWatcher()
-			if err != nil { log.Printf("[subscription-watcher] claim failed: %v", err); continue }
-			if task == nil { continue }
+			if err != nil {
+				log.Printf("[subscription-watcher] claim failed: %v", err)
+				continue
+			}
+			if task == nil {
+				continue
+			}
 			p := providers[task.Provider]
-			if p == nil { _ = store.RescheduleWatcher(task.OrderID, "provider_not_registered", 30*time.Second, false); continue }
+			if p == nil {
+				_ = store.RescheduleWatcher(task.OrderID, "provider_not_registered", 30*time.Second, false)
+				continue
+			}
 			result, err := p.GetOrder(ctx, task.ExternalID)
-			if err != nil { _ = store.RescheduleWatcher(task.OrderID, err.Error(), retryDelay(task.Attempts), time.Now().After(task.Deadline)); continue }
+			if err != nil {
+				_ = store.RescheduleWatcher(task.OrderID, err.Error(), retryDelay(task.Attempts), time.Now().After(task.Deadline))
+				continue
+			}
 			switch strings.ToLower(strings.TrimSpace(result.Status)) {
 			case "succeeded":
 				_ = store.FinishWatcher(task.OrderID, result.Status, result.ExternalID, "SUCCEEDED", "")
@@ -51,5 +63,14 @@ func runWatcher(ctx context.Context, store *Store, providers map[string]provider
 }
 
 func retryDelay(attempts int) time.Duration {
-	switch { case attempts <= 1: return 2*time.Second; case attempts == 2: return 5*time.Second; case attempts == 3: return 10*time.Second; default: return 30*time.Second }
+	switch {
+	case attempts <= 1:
+		return 2 * time.Second
+	case attempts == 2:
+		return 5 * time.Second
+	case attempts == 3:
+		return 10 * time.Second
+	default:
+		return 30 * time.Second
+	}
 }

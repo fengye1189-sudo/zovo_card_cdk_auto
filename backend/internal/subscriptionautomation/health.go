@@ -16,7 +16,9 @@ import (
 // StartHealthChecker is opt-in and read-only. It updates only the isolated
 // subscription_provider_health table.
 func StartHealthChecker(ctx context.Context) {
-	if !strings.EqualFold(strings.TrimSpace(os.Getenv("SUBSCRIPTION_AUTOMATION_HEALTH_ENABLED")), "true") { return }
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("SUBSCRIPTION_AUTOMATION_HEALTH_ENABLED")), "true") {
+		return
+	}
 	store := NewStore(db.DB)
 	providers := []provider.Provider{cardplatform.NewProviderAdapter(nil), orbitcard.NewProviderAdapter(nil)}
 	go func() {
@@ -26,12 +28,24 @@ func StartHealthChecker(ctx context.Context) {
 				h := p.HealthCheck(checkCtx)
 				cancel()
 				state := HealthDegraded
-				if h.Healthy { state = HealthHealthy }
-				if err := store.UpsertProviderHealth(p.Name(), state, h.Message); err != nil { log.Printf("[subscription-health] %s: %v", p.Name(), err) }
+				if h.Healthy {
+					state = HealthHealthy
+				}
+				if err := store.UpsertProviderHealth(p.Name(), state, h.Message); err != nil {
+					log.Printf("[subscription-health] %s: %v", p.Name(), err)
+				}
 			}
 		}
 		check()
-		ticker := time.NewTicker(60 * time.Second); defer ticker.Stop()
-		for { select { case <-ctx.Done(): return; case <-ticker.C: check() } }
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				check()
+			}
+		}
 	}()
 }

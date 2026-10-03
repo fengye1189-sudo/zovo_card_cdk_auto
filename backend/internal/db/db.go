@@ -1025,23 +1025,23 @@ func ListLocalDirectOrderFacts(limit int) ([]LocalDirectOrderFact, error) {
 // changed and the list endpoint no longer returns orders created by the old
 // key.
 type DirectOrderMirror struct {
-	UpstreamID             int64
-	ClientRequestID        string
-	AccountEmail           string
-	Product                string
-	Plan                   string
-	Status                 string
-	Stage                  string
-	CardID                 int64
-	CardLastFour           string
-	Currency               string
-	QuotedAmountMinor      int64
-	FinalAmountMinor       int64
-	RenewalStatus          string
-	CreatedAt              int64
-	UpdatedAt              int64
-	CompletedAt            int64
-	Source                 string
+	UpstreamID        int64
+	ClientRequestID   string
+	AccountEmail      string
+	Product           string
+	Plan              string
+	Status            string
+	Stage             string
+	CardID            int64
+	CardLastFour      string
+	Currency          string
+	QuotedAmountMinor int64
+	FinalAmountMinor  int64
+	RenewalStatus     string
+	CreatedAt         int64
+	UpdatedAt         int64
+	CompletedAt       int64
+	Source            string
 }
 
 // ListDirectOrderMirrors returns persisted upstream order observations in

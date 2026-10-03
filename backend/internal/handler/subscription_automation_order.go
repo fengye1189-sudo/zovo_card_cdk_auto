@@ -12,7 +12,7 @@ import (
 
 type subscriptionDryRunRequest struct {
 	ClientOrderNo string `json:"client_order_no"`
-	Product string `json:"product"`
+	Product       string `json:"product"`
 	PaymentRegion string `json:"payment_region"`
 }
 
@@ -61,17 +61,17 @@ func AdminSubscriptionAutomationOrderPreview(c *gin.Context) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusAccepted, gin.H{
-		"preview_only": true,
-		"order_id": orderID,
-		"client_order_no": req.ClientOrderNo,
-		"product": req.Product,
-		"payment_region": req.PaymentRegion,
-		"provider": decision.Provider,
-		"provider_role": decision.Role,
-		"route_weight": decision.Weight,
+		"preview_only":         true,
+		"order_id":             orderID,
+		"client_order_no":      req.ClientOrderNo,
+		"product":              req.Product,
+		"payment_region":       req.PaymentRegion,
+		"provider":             decision.Provider,
+		"provider_role":        decision.Role,
+		"route_weight":         decision.Weight,
 		"recent_primary_count": decision.RecentCount,
-		"route_window": decision.Window,
-		"upstream_called": false,
-		"message": "订单已写入隔离订阅表，尚未调用任何上游",
+		"route_window":         decision.Window,
+		"upstream_called":      false,
+		"message":              "订单已写入隔离订阅表，尚未调用任何上游",
 	})
 }

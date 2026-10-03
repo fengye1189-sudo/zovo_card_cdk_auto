@@ -6,25 +6,25 @@ import (
 )
 
 type RouteCandidate struct {
-	Name string `json:"name"`
-	Role string `json:"role"`
-	Weight int `json:"weight"`
-	RecentCount int `json:"recent_count"`
+	Name        string `json:"name"`
+	Role        string `json:"role"`
+	Weight      int    `json:"weight"`
+	RecentCount int    `json:"recent_count"`
 }
 
 type RouteDecision struct {
-	Provider string `json:"provider"`
-	Role string `json:"role"`
-	Weight int `json:"weight"`
-	RecentCount int `json:"recent_count"`
-	Window int `json:"window"`
+	Provider    string `json:"provider"`
+	Role        string `json:"role"`
+	Weight      int    `json:"weight"`
+	RecentCount int    `json:"recent_count"`
+	Window      int    `json:"window"`
 }
 
 type HealthState string
 
 const (
-	HealthHealthy HealthState = "HEALTHY"
-	HealthDegraded HealthState = "DEGRADED"
+	HealthHealthy     HealthState = "HEALTHY"
+	HealthDegraded    HealthState = "DEGRADED"
 	HealthUnavailable HealthState = "UNAVAILABLE"
 )
 
@@ -42,17 +42,25 @@ func SelectPrimaryWithHealth(counts map[string]int, health map[string]HealthStat
 	available := candidates[:0]
 	for _, candidate := range candidates {
 		state := health[candidate.Name]
-		if state == "" { state = HealthDegraded }
-		if state != HealthUnavailable { available = append(available, candidate) }
+		if state == "" {
+			state = HealthDegraded
+		}
+		if state != HealthUnavailable {
+			available = append(available, candidate)
+		}
 	}
 	candidates = available
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := float64(candidates[i].RecentCount+1) / float64(candidates[i].Weight)
 		right := float64(candidates[j].RecentCount+1) / float64(candidates[j].Weight)
-		if left != right { return left < right }
+		if left != right {
+			return left < right
+		}
 		return candidates[i].Name < candidates[j].Name
 	})
-	if len(candidates) == 0 { return RouteDecision{}, fmt.Errorf("no primary provider configured") }
+	if len(candidates) == 0 {
+		return RouteDecision{}, fmt.Errorf("no primary provider configured")
+	}
 	selected := candidates[0]
 	return RouteDecision{Provider: selected.Name, Role: selected.Role, Weight: selected.Weight, RecentCount: selected.RecentCount, Window: 1000}, nil
 }

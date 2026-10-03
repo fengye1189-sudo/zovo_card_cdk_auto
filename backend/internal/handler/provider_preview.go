@@ -34,14 +34,14 @@ func AdminProviderPreview(c *gin.Context) {
 	items := make([]gin.H, 0, len(candidates))
 	for _, item := range candidates {
 		items = append(items, gin.H{
-			"provider": item.Quote.Provider,
-			"product": item.Quote.Product,
-			"available": item.Quote.Available,
-			"stock": item.Quote.Stock,
-			"cost_minor": item.Quote.CostMinor,
-			"currency": item.Quote.Currency,
+			"provider":    item.Quote.Provider,
+			"product":     item.Quote.Product,
+			"available":   item.Quote.Available,
+			"stock":       item.Quote.Stock,
+			"cost_minor":  item.Quote.CostMinor,
+			"currency":    item.Quote.Currency,
 			"observed_at": item.Quote.ObservedAt,
-			"rank": item.Rank,
+			"rank":        item.Rank,
 		})
 	}
 	c.Header("Cache-Control", "no-store")
@@ -65,9 +65,9 @@ func AdminProviderHealth(c *gin.Context) {
 		}
 		h := p.HealthCheck(ctx)
 		items = append(items, gin.H{
-			"provider": h.Provider,
-			"healthy": h.Healthy,
-			"message": h.Message,
+			"provider":     h.Provider,
+			"healthy":      h.Healthy,
+			"message":      h.Message,
 			"capabilities": p.Capabilities(),
 		})
 	}
