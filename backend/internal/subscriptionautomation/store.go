@@ -119,4 +119,16 @@ func (s *Store) FinishWatcher(orderID, rawStatus, externalID, finalStatus, reaso
 	return err
 }
 
+func (s *Store) MarkSuccess(orderID, providerName string) error {
+	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
+	_, err := s.database.Exec(`UPDATE subscription_orders SET status='SUCCEEDED',final_provider=?,updated_at=CURRENT_TIMESTAMP WHERE order_id=?`, providerName, orderID)
+	return err
+}
+
+func (s *Store) MarkFailure(orderID, reason string) error {
+	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
+	_, err := s.database.Exec(`UPDATE subscription_orders SET status='FAILED',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE order_id=?`, reason, orderID)
+	return err
+}
+
 func boolInt(v bool) int { if v { return 1 }; return 0 }
