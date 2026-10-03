@@ -325,6 +325,36 @@ func createTables() error {
 	return nil
 }
 
+// ensureAutomationProductDefault upgrades older installations whose policy was
+// created before automatic product selection existed.  The flag is only added
+// when it is absent: an administrator's explicit true/false choice is never
+// overwritten.  With the flag enabled, the automation worker uses the current
+// Zovo product catalogue and its live amount/availability limits instead of a
+// stale fixed product code.
+func ensureAutomationProductDefault() error {
+	var raw string
+	if err := DB.QueryRow("SELECT value FROM automation_policy WHERE id=1").Scan(&raw); err != nil {
+		return err
+	}
+	var policy map[string]any
+	if err := json.Unmarshal([]byte(raw), &policy); err != nil {
+		// Preserve a malformed policy for the existing validation/error path;
+		// startup should not silently replace administrator data.
+		log.Printf("ensureAutomationProductDefault: 保留无法解析的 automation_policy: %v", err)
+		return nil
+	}
+	if _, exists := policy["auto_product_enabled"]; exists {
+		return nil
+	}
+	policy["auto_product_enabled"] = true
+	updated, err := json.Marshal(policy)
+	if err != nil {
+		return err
+	}
+	_, err = DB.Exec("UPDATE automation_policy SET value=?,version=version+1 WHERE id=1", string(updated))
+	return err
+}
+
 const (
 	cdkPublicQueryWindow     = 7 * 24 * time.Hour
 	cdkPreflightRetentionTTL = 24 * time.Hour

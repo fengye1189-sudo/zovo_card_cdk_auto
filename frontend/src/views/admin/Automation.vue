@@ -23,11 +23,11 @@
           <el-form-item label="自动补充已勾选卡的余额"><el-switch v-model="settings.topup_enabled" /><p class="hint">付款结果已确认且余额低于阈值时可再次补款；有在途或待核对订单、资金未确认时不补款。仍受每日预算和单次上限限制；5X 专卡完成 3 次 5X 后才进入 Plus 池。</p></el-form-item>
           <el-form-item label="两次明确拒付后自动销卡退款"><el-switch v-model="settings.retire_enabled" /><p class="hint">同一卡累计第 2 次上游明确拒付后进入待销；第 1 次只记入健康记录。销卡前会确认没有在途订单或待核对资金，结果不明时不会重复提交。</p></el-form-item>
           <el-form-item label="健康工作卡只剩 1 张时自动补开"><el-switch v-model="settings.open_enabled" /><p class="hint">维持至少 2 张健康工作卡；可用卡只剩 1 张时补开 1 张。到账核查期间或已有自动开卡尚未加入支付名单时，不会重复开卡，并始终受预算及每日开卡上限限制。</p></el-form-item>
-          <el-form-item label="自动选择高成功率卡头"><el-switch v-model="settings.auto_product_enabled" /><p class="hint">卡头先分为“星链卡”和“渠道1”，再按具体 BIN 统计近 30 天成功率。自动开卡每 5 次有 4 次选择统计分最高的卡头，1 次兼顾两种类型并优先试用新出现或样本最少的合格卡头。</p></el-form-item>
+          <el-form-item label="按 Zovo 当前产品自动选卡头"><el-switch v-model="settings.auto_product_enabled" /><p class="hint">开启后不固定产品码：每次开卡先读取 Zovo 当前可用产品、价格和金额限制，再结合本站近 30 天成功率选择合格卡头；Zovo 下架或限额变化会自动生效。</p></el-form-item>
           <el-form-item label="自动开出的卡允许加入支付名单"><el-switch v-model="settings.enroll_created_cards" /><p class="hint">仅适用于本站自动开卡，确认到账后加入；其他新卡不会自动勾选。</p></el-form-item>
           <el-form-item v-for="field in moneyFields" :key="field.key" :label="field.label+'（USD）'"><el-input-number :model-value="(settings[field.key] || 0)/100" @update:model-value="value=>settings[field.key]=Math.round((value || 0)*100)" :min="0" :max="1000000" :precision="2" :step="1" /><p class="hint">{{ field.hint }}</p></el-form-item>
           <el-form-item label="24 小时最多自动开卡数量"><el-input-number v-model="settings.daily_open_limit" :min="0" :max="20" :precision="0" /></el-form-item>
-          <el-form-item label="固定卡头产品码（关闭随机时使用）"><el-input v-model="settings.product_code" :disabled="settings.auto_product_enabled" placeholder="例如 P5378OX，以 Zovo 当前产品为准" maxlength="80" /></el-form-item>
+          <el-form-item label="固定卡头产品码（关闭 Zovo 自动选卡时使用）"><el-input v-model="settings.product_code" :disabled="settings.auto_product_enabled" placeholder="仅关闭自动选卡时填写，例如 P5378OX" maxlength="80" /></el-form-item>
           <el-form-item label="持卡人名"><el-input v-model="settings.first_name" placeholder="按发卡平台要求填写" maxlength="80" /></el-form-item>
           <el-form-item label="持卡人姓"><el-input v-model="settings.last_name" placeholder="按发卡平台要求填写" maxlength="80" /></el-form-item>
         </div>

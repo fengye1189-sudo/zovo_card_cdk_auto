@@ -221,7 +221,7 @@ func InitLocalCDK() error {
  action_key TEXT PRIMARY KEY, attempted_at INTEGER NOT NULL, state TEXT NOT NULL
  );
  CREATE TABLE IF NOT EXISTS automation_policy (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
- INSERT OR IGNORE INTO automation_policy(id,value) VALUES(1,'{"sync_enabled":true}');
+ INSERT OR IGNORE INTO automation_policy(id,value) VALUES(1,'{"sync_enabled":true,"auto_product_enabled":true}');
  CREATE TABLE IF NOT EXISTS automation_watch (
  local_id INTEGER PRIMARY KEY, next_check INTEGER NOT NULL DEFAULT 0,
  first_seen INTEGER NOT NULL DEFAULT 0, checked_at INTEGER NOT NULL DEFAULT 0,
@@ -348,6 +348,9 @@ func InitLocalCDK() error {
 		return err
 	}
 	if err = migrateLocalCDKResultColumns(); err != nil {
+		return err
+	}
+	if err = ensureAutomationProductDefault(); err != nil {
 		return err
 	}
 	return migrateAutomationDeclineEmails()
