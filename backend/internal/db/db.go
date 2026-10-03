@@ -290,8 +290,59 @@ func createTables() error {
 			bin_heads TEXT DEFAULT '',
 			enabled INTEGER DEFAULT 1,
 			suspended_at TEXT DEFAULT '',
-			synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			 synced_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+
+		// Isolated GPT subscription automation. These tables are not referenced
+		// by the existing CDK/card fulfillment flow; they are safe to create
+		// before the second automation is enabled.
+		`CREATE TABLE IF NOT EXISTS subscription_orders (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			order_id TEXT NOT NULL UNIQUE,
+			client_order_no TEXT NOT NULL UNIQUE,
+			product TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			initial_provider TEXT DEFAULT '',
+			final_provider TEXT DEFAULT '',
+			primary_failure_count INTEGER NOT NULL DEFAULT 0,
+			jz_rescue_used INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscription_orders_status ON subscription_orders(status,updated_at)`,
+		`CREATE TABLE IF NOT EXISTS subscription_order_attempts (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			order_id TEXT NOT NULL,
+			attempt_no INTEGER NOT NULL,
+			provider TEXT NOT NULL,
+			provider_role TEXT NOT NULL,
+			client_order_no TEXT NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			external_order_id TEXT DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'PENDING',
+			raw_status TEXT DEFAULT '',
+			is_unknown INTEGER NOT NULL DEFAULT 0,
+			is_terminal_failure INTEGER NOT NULL DEFAULT 0,
+			failure_reason TEXT DEFAULT '',
+			started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			finished_at DATETIME,
+			UNIQUE(order_id,attempt_no)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscription_attempts_order ON subscription_order_attempts(order_id,attempt_no)`,
+		`CREATE TABLE IF NOT EXISTS subscription_order_watchers (
+			order_id TEXT PRIMARY KEY,
+			provider TEXT NOT NULL,
+			external_order_id TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'ACTIVE',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			next_check_at DATETIME NOT NULL,
+			deadline_at DATETIME NOT NULL,
+			lease_until DATETIME,
+			last_error TEXT DEFAULT '',
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_subscription_watchers_due ON subscription_order_watchers(status,next_check_at,deadline_at)`,
 	}
 
 	for _, query := range queries {
