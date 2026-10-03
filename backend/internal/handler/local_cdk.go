@@ -488,13 +488,14 @@ type localCode struct {
 	ID, Expires, TokenExpires, PFExpires, CardID, Version, Upstream, LastChecked int64
 	ActivatedAt, SubscriptionExpiresAt                                           int64
 	Plan, Status, Token, Device, PF, Cred, Request, Email, Message, UpgradeType  string
+	Provider, ProviderTaskID                                                   string
 	ExpiryEstimated                                                              bool
 }
 
 func loadLocal(where, value string) (localCode, error) {
 	var r localCode
 	var expiryEstimated int
-	e := db.DB.QueryRow("SELECT id,plan,status,expires_at,token_hash,device_hash,token_expires,preflight_hash,credential_hash,preflight_expires,card_id,pricing_version,request_id,upstream_id,email,message,last_checked,activated_at,subscription_expires_at,upgrade_type,expiry_estimated FROM local_cdks WHERE "+where+"=?", value).Scan(&r.ID, &r.Plan, &r.Status, &r.Expires, &r.Token, &r.Device, &r.TokenExpires, &r.PF, &r.Cred, &r.PFExpires, &r.CardID, &r.Version, &r.Request, &r.Upstream, &r.Email, &r.Message, &r.LastChecked, &r.ActivatedAt, &r.SubscriptionExpiresAt, &r.UpgradeType, &expiryEstimated)
+	e := db.DB.QueryRow("SELECT id,plan,status,expires_at,token_hash,device_hash,token_expires,preflight_hash,credential_hash,preflight_expires,card_id,pricing_version,request_id,upstream_id,email,message,last_checked,activated_at,subscription_expires_at,upgrade_type,expiry_estimated,COALESCE(provider,'LOCAL'),COALESCE(provider_task_id,'') FROM local_cdks WHERE "+where+"=?", value).Scan(&r.ID, &r.Plan, &r.Status, &r.Expires, &r.Token, &r.Device, &r.TokenExpires, &r.PF, &r.Cred, &r.PFExpires, &r.CardID, &r.Version, &r.Request, &r.Upstream, &r.Email, &r.Message, &r.LastChecked, &r.ActivatedAt, &r.SubscriptionExpiresAt, &r.UpgradeType, &expiryEstimated, &r.Provider, &r.ProviderTaskID)
 	r.ExpiryEstimated = expiryEstimated == 1
 	return r, e
 }
@@ -836,6 +837,9 @@ func localPublicResult(r localCode) gin.H {
 	}
 	result := gin.H{
 		"status":        status,
+		"provider":      firstNonEmpty(r.Provider, "LOCAL"),
+		"provider_label": func() string { if strings.EqualFold(r.Provider, "JZ") { return "JZ 上游" }; return "自有卡密" }(),
+		"provider_task_id": r.ProviderTaskID,
 		"plan":          r.Plan,
 		"email":         maskEmail(r.Email),
 		"message":       message,

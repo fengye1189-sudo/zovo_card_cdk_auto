@@ -65,7 +65,7 @@
           <p>开通：{{ date(row.activated_at) }}</p>
           <p>{{ row.expiry_estimated ? '预计到期' : '到期' }}：{{ date(row.subscription_expires_at) }}</p>
           <p :class="remainingTone(row)">{{ remaining(row) }}</p>
-          <p class="text-sm text-muted">兑换记录 #{{ row.id }} · 商城订单 {{ shortOrder(row.marketplace_order_id) }} · 上游 {{ row.upstream_id || '—' }}</p>
+          <p class="text-sm text-muted">来源：{{ row.provider_label || '自有卡密' }} · 兑换记录 #{{ row.id }} · 商城订单 {{ shortOrder(row.marketplace_order_id) }} · 上游 {{ row.upstream_id || '—' }}</p>
         </article>
       </div>
       <div class="hidden md:block overflow-x-auto">
@@ -79,7 +79,7 @@
             <td class="pr-4">{{ row.upgrade_type || planLabel(row.plan) }}</td>
             <td class="pr-4 whitespace-nowrap">开通 {{ date(row.activated_at) }}<br />{{ row.expiry_estimated ? '预计到期' : '到期' }} {{ date(row.subscription_expires_at) }}</td>
             <td class="pr-4 whitespace-nowrap" :class="remainingTone(row)">{{ remaining(row) }}</td>
-            <td class="whitespace-nowrap">兑换 #{{ row.id }}<br /><span class="text-muted">商城 {{ shortOrder(row.marketplace_order_id) }}</span><br /><span class="text-muted">上游 {{ row.upstream_id || '—' }}</span></td>
+            <td class="whitespace-nowrap">{{ row.provider_label || '自有卡密' }}<br /><span class="text-muted">兑换 #{{ row.id }}</span><br /><span class="text-muted">商城 {{ shortOrder(row.marketplace_order_id) }}</span><br /><span class="text-muted">上游 {{ row.upstream_id || '—' }}</span></td>
           </tr></tbody>
         </table>
       </div>
@@ -108,6 +108,8 @@ type Customer = {
   upstream_id: number
   card_id: number
   marketplace_order_id: string
+  provider: string
+  provider_label: string
   buyer_name: string
   buyer_email: string
   telegram_id: string

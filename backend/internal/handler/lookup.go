@@ -30,6 +30,9 @@ type cdkLookupResult struct {
 	CanResubmit  bool    `json:"can_resubmit"`
 	AccountEmail string  `json:"account_email,omitempty"`
 	Plan         string  `json:"plan,omitempty"`
+	Provider     string  `json:"provider,omitempty"`
+	ProviderLabel string `json:"provider_label,omitempty"`
+	ProviderTaskID string `json:"provider_task_id,omitempty"`
 	UsedAt       *string `json:"used_at,omitempty"`
 	Notes        string  `json:"notes,omitempty"`
 	Message      string  `json:"message"`
@@ -176,6 +179,8 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 			return resp
 		}
 		resp.Plan = local.Plan
+		resp.Provider = firstNonEmpty(local.Provider, "LOCAL")
+		if strings.EqualFold(resp.Provider, "JZ") { resp.ProviderLabel = "JZ 上游" } else { resp.ProviderLabel = "自有卡密" }
 		if local.SubmittedAt > 0 {
 			resp.AccountEmail = maskEmail(local.Email)
 		}
@@ -532,6 +537,7 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 
 func lookupManagedCDK(ctx context.Context, code string, now time.Time) (cdkLookupResult, bool) {
 	response := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
+	response.Provider, response.ProviderLabel = "JZ", "JZ 上游"
 	attempt, err := db.GetManagedActivationByCodeHash(managedCodeHash(code))
 	if err != nil {
 		return response, false
@@ -580,6 +586,7 @@ func lookupManagedCDK(ctx context.Context, code string, now time.Time) (cdkLooku
 		}
 		return ""
 	}())
+	response.ProviderTaskID = task.TaskID
 	response.AccountEmail = maskEmail(task.AccountEmail)
 	switch strings.ToLower(strings.TrimSpace(task.TaskStatus)) {
 	case "completed":

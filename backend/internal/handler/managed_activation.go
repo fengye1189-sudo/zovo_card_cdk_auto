@@ -274,6 +274,7 @@ func managedPendingPayload(plan, taskID string) gin.H {
 	return gin.H{
 		"status": "submitted", "stage": "queued", "plan": plan,
 		"message": "兑换申请已提交，正在处理。", "task_reference": taskID,
+		"provider": "JZ", "provider_label": "JZ 上游", "provider_task_id": taskID,
 		"flow": managedFlowName,
 	}
 }
@@ -297,6 +298,7 @@ func managedTaskPayload(task jzactivation.TaskResult, attempt *db.ManagedActivat
 	result := gin.H{
 		"status": safeStatus, "stage": stage, "message": message,
 		"flow":         managedFlowName,
+		"provider": "JZ", "provider_label": "JZ 上游", "provider_task_id": task.TaskID,
 		"task_reference": task.TaskID,
 		"can_resubmit": canResubmit, "plan": firstNonEmpty(task.PlanType, attempt.Plan),
 		"account_email": maskEmail(firstNonEmpty(task.AccountEmail, attempt.AccountEmail)),

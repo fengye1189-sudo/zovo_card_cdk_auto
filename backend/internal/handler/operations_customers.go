@@ -46,6 +46,8 @@ type operationsCustomer struct {
 	UpstreamID            int64  `json:"upstream_id"`
 	CardID                int64  `json:"card_id"`
 	MarketplaceOrderID    string `json:"marketplace_order_id"`
+	Provider              string `json:"provider"`
+	ProviderLabel         string `json:"provider_label"`
 	BuyerName             string `json:"buyer_name"`
 	BuyerEmail            string `json:"buyer_email"`
 	TelegramID            string `json:"telegram_id"`
@@ -89,10 +91,22 @@ func customerIdentityIsExplicit(source string) bool {
 	}
 }
 
+func mapProviderLabel(provider string) string {
+	switch strings.ToUpper(strings.TrimSpace(provider)) {
+	case "JZ":
+		return "JZ 上游"
+	case "ZOVO":
+		return "Zovo"
+	default:
+		return "自有卡密"
+	}
+}
+
 const operationsCustomerCurrentCTE = `WITH all_customer_completions AS (
 	SELECT l.id,LOWER(TRIM(l.email)) AS account_key,TRIM(l.email) AS email,l.plan,
 	       l.upgrade_type,l.activated_at,l.subscription_expires_at,l.expiry_estimated,
-	       l.upstream_id,l.card_id,COALESCE(b.marketplace_order_id,'') AS marketplace_order_id
+	       l.upstream_id,l.card_id,COALESCE(b.marketplace_order_id,'') AS marketplace_order_id,
+	       COALESCE(l.provider,'LOCAL') AS provider
 	FROM local_cdks l LEFT JOIN marketplace_local_cdk_bindings b ON b.local_id=l.id
 	WHERE l.status='consumed' AND TRIM(l.email)<>''
 	  AND l.activated_at>0 AND l.subscription_expires_at>0
@@ -102,7 +116,7 @@ const operationsCustomerCurrentCTE = `WITH all_customer_completions AS (
 	         WHEN 'pro_5x' THEN 'ChatGPT Pro 5X（菲律宾卡升级）'
 	         WHEN 'pro_20x' THEN 'ChatGPT Pro 20X' ELSE '账号升级' END,
 	       m.activated_at,m.subscription_expires_at,m.expiry_estimated,
-	       0,0,COALESCE(b.marketplace_order_id,'')
+	       0,0,COALESCE(b.marketplace_order_id,''),'JZ'
 	FROM managed_activation_attempts m
 	LEFT JOIN marketplace_managed_cdk_bindings b ON b.code_hash=m.code_hash
 	WHERE LOWER(TRIM(m.status))='completed' AND TRIM(m.account_email)<>''
@@ -114,7 +128,7 @@ const operationsCustomerCurrentCTE = `WITH all_customer_completions AS (
 	         WHEN 'pro_5x_cl' THEN 'ChatGPT Pro 5X（智利区充值）'
 	         WHEN 'pro_20x' THEN 'ChatGPT Pro 20X' ELSE '账号升级' END,
 	       z.activated_at,z.subscription_expires_at,z.expiry_estimated,
-	       z.upstream_id,z.card_id,''
+	       z.upstream_id,z.card_id,'','ZOVO'
 	FROM zovo_direct_order_mirror z
 	WHERE LOWER(TRIM(z.status))='completed' AND TRIM(z.account_email)<>''
 	  AND z.account_email NOT LIKE '%*%' AND z.account_email LIKE '%@%'
@@ -129,7 +143,7 @@ const operationsCustomerCurrentCTE = `WITH all_customer_completions AS (
 	FROM all_customer_completions c
 ), current_customers AS (
 	SELECT id,account_key,email,plan,upgrade_type,activated_at,subscription_expires_at,
-	       expiry_estimated,upstream_id,card_id,marketplace_order_id
+	       expiry_estimated,upstream_id,card_id,marketplace_order_id,provider
 	FROM ranked_customers WHERE customer_rank=1
 ) `
 
@@ -367,7 +381,7 @@ func OperationsCustomersSearch(c *gin.Context) {
 	}
 	queryArgs := append(append([]any{}, args...), req.PageSize, int64(req.Page-1)*int64(req.PageSize))
 	rows, err = tx.Query(operationsCustomerCurrentCTE+`SELECT id,email,plan,upgrade_type,activated_at,
-		subscription_expires_at,expiry_estimated,upstream_id,card_id,marketplace_order_id
+		subscription_expires_at,expiry_estimated,upstream_id,card_id,marketplace_order_id,provider
 		FROM current_customers`+where+` ORDER BY subscription_expires_at ASC,id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		localError(c, 500, "读取客户列表失败")
@@ -378,11 +392,12 @@ func OperationsCustomersSearch(c *gin.Context) {
 		var item operationsCustomer
 		var estimated int
 		if err = rows.Scan(&item.ID, &item.Email, &item.Plan, &item.UpgradeType, &item.ActivatedAt,
-			&item.SubscriptionExpiresAt, &estimated, &item.UpstreamID, &item.CardID, &item.MarketplaceOrderID); err != nil {
+			&item.SubscriptionExpiresAt, &estimated, &item.UpstreamID, &item.CardID, &item.MarketplaceOrderID, &item.Provider); err != nil {
 			localError(c, 500, "读取客户列表失败")
 			return
 		}
 		item.ExpiryEstimated = estimated == 1
+		item.ProviderLabel = mapProviderLabel(item.Provider)
 		list = append(list, item)
 	}
 	if err = rows.Err(); err != nil {

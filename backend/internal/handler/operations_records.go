@@ -48,14 +48,17 @@ type operationsRecord struct {
 	ProductName   string `json:"product_name"`
 	SupportStatus string `json:"support_status"`
 	Assignee      string `json:"assignee"`
+	Provider      string `json:"provider"`
+	ProviderLabel string `json:"provider_label"`
+	ProviderTaskID string `json:"provider_task_id"`
 }
 
 const operationsRecordFrom = " FROM local_cdks l LEFT JOIN operations_product_bindings b ON b.local_id=l.id LEFT JOIN operations_products p ON p.id=COALESCE(b.product_id,'plus') LEFT JOIN operations_support s ON s.local_id=l.id"
-const operationsRecordColumns = "l.id,l.prefix,l.plan,l.status,l.expires_at,l.created_at,l.batch_id,l.upstream_id,l.request_id,l.message,l.card_id,COALESCE(p.id,'plus'),COALESCE(p.name,'GPT Plus'),COALESCE(s.status,''),COALESCE(s.assignee,'')"
+const operationsRecordColumns = "l.id,l.prefix,l.plan,l.status,l.expires_at,l.created_at,l.batch_id,l.upstream_id,l.request_id,l.message,l.card_id,COALESCE(p.id,'plus'),COALESCE(p.name,'GPT Plus'),COALESCE(s.status,''),COALESCE(s.assignee,''),COALESCE(l.provider,'LOCAL'),CASE COALESCE(l.provider,'LOCAL') WHEN 'JZ' THEN 'JZ 上游' WHEN 'ZOVO' THEN 'Zovo' ELSE '自有卡密' END,COALESCE(l.provider_task_id,'')"
 
 func scanOperationsRecord(row interface{ Scan(...any) error }) (operationsRecord, error) {
 	var r operationsRecord
-	e := row.Scan(&r.ID, &r.Prefix, &r.Plan, &r.Status, &r.Expires, &r.Created, &r.Batch, &r.Upstream, &r.Request, &r.Message, &r.CardID, &r.ProductID, &r.ProductName, &r.SupportStatus, &r.Assignee)
+	e := row.Scan(&r.ID, &r.Prefix, &r.Plan, &r.Status, &r.Expires, &r.Created, &r.Batch, &r.Upstream, &r.Request, &r.Message, &r.CardID, &r.ProductID, &r.ProductName, &r.SupportStatus, &r.Assignee, &r.Provider, &r.ProviderLabel, &r.ProviderTaskID)
 	return r, e
 }
 func operationsRecordsLocation(c *gin.Context) (*time.Location, error) {
@@ -75,7 +78,7 @@ func operationsRecordsFilter(c *gin.Context) (string, []any, error) {
 	}
 	clauses := []string{"1=1"}
 	args := []any{}
-	for _, field := range []struct{ key, column string }{{"status", "l.status"}, {"batch", "l.batch_id"}, {"product", "COALESCE(b.product_id,'plus')"}, {"support_status", "s.status"}, {"assignee", "s.assignee"}} {
+	for _, field := range []struct{ key, column string }{{"status", "l.status"}, {"provider", "COALESCE(l.provider,'LOCAL')"}, {"batch", "l.batch_id"}, {"product", "COALESCE(b.product_id,'plus')"}, {"support_status", "s.status"}, {"assignee", "s.assignee"}} {
 		v := strings.TrimSpace(c.Query(field.key))
 		if len(v) > 200 {
 			return "", nil, fmt.Errorf("筛选条件过长")
@@ -239,14 +242,14 @@ func OperationsRecordsExport(c *gin.Context) {
 	}
 	w := csv.NewWriter(output)
 	location, _ := operationsRecordsLocation(c)
-	_ = w.Write([]string{"ID", "卡密前缀", "商品编号", "商品名称", "套餐", "支付状态", "创建时间 " + location.String(), "到期时间 " + location.String(), "批次", "商户订单号", "上游订单ID", "支付卡ID", "说明", "售后状态", "处理人"})
+	_ = w.Write([]string{"ID", "卡密前缀", "商品编号", "商品名称", "套餐", "来源", "上游任务号", "支付状态", "创建时间 " + location.String(), "到期时间 " + location.String(), "批次", "商户订单号", "上游订单ID", "支付卡ID", "说明", "售后状态", "处理人"})
 	for rows.Next() {
 		r, e := scanOperationsRecord(rows)
 		if e != nil {
 			localError(c, 500, "导出读取失败，文件未下载")
 			return
 		}
-		values := []string{strconv.FormatInt(r.ID, 10), r.Prefix, r.ProductID, r.ProductName, r.Plan, r.Status, time.Unix(r.Created, 0).In(location).Format(time.RFC3339), time.Unix(r.Expires, 0).In(location).Format(time.RFC3339), r.Batch, r.Request, strconv.FormatInt(r.Upstream, 10), strconv.FormatInt(r.CardID, 10), r.Message, r.SupportStatus, r.Assignee}
+		values := []string{strconv.FormatInt(r.ID, 10), r.Prefix, r.ProductID, r.ProductName, r.Plan, r.ProviderLabel, r.ProviderTaskID, r.Status, time.Unix(r.Created, 0).In(location).Format(time.RFC3339), time.Unix(r.Expires, 0).In(location).Format(time.RFC3339), r.Batch, r.Request, strconv.FormatInt(r.Upstream, 10), strconv.FormatInt(r.CardID, 10), r.Message, r.SupportStatus, r.Assignee}
 		for i := range values {
 			values[i] = operationsCSVCell(values[i])
 		}

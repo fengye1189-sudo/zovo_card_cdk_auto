@@ -23,7 +23,9 @@ func InitLocalCDK() error {
  -- confirmed completion. A generic historical consumed state is not enough
  -- to authorize a marketplace invoice lookup.
  upstream_completion_verified_at INTEGER NOT NULL DEFAULT 0,
- upstream_completion_source TEXT NOT NULL DEFAULT ''
+ upstream_completion_source TEXT NOT NULL DEFAULT '',
+ provider TEXT NOT NULL DEFAULT 'LOCAL',
+ provider_task_id TEXT NOT NULL DEFAULT ''
  ); CREATE INDEX IF NOT EXISTS idx_local_cdk_token ON local_cdks(token_hash);
  CREATE TABLE IF NOT EXISTS local_card_selections (
   local_id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL, selected_at INTEGER NOT NULL
@@ -348,6 +350,9 @@ func InitLocalCDK() error {
 		return err
 	}
 	if err = migrateLocalCDKResultColumns(); err != nil {
+		return err
+	}
+	if err = migrateProviderMetadata(); err != nil {
 		return err
 	}
 	if err = ensureAutomationProductDefault(); err != nil {

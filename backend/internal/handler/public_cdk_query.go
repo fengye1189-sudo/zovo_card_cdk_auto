@@ -35,6 +35,8 @@ type localPublicCDK struct {
 	ExpiresAt      int64
 	Email          string
 	Message        string
+	Provider       string
+	ProviderTaskID string
 	SubmittedAt    int64
 	QueryExpiresAt int64
 }
@@ -92,14 +94,14 @@ func loadLocalPublicCDK(code string, now time.Time) (*localPublicCDK, error) {
 	err := db.DB.QueryRow(`
 		SELECT c.id, COALESCE(c.plan,''), COALESCE(c.status,''),
 		       COALESCE(c.expires_at,0), COALESCE(c.email,''),
-		       COALESCE(c.message,''),
+		       COALESCE(c.message,''),COALESCE(c.provider,'LOCAL'),COALESCE(c.provider_task_id,''),
 		       `+localSubmissionAnchorSQL+`
 		FROM local_cdks c
 		WHERE c.code_hash=?
 		LIMIT 1
 	`, localHash(normalized)).Scan(
 		&row.ID, &row.Plan, &row.Status, &row.ExpiresAt, &row.Email,
-		&row.Message, &row.SubmittedAt,
+		&row.Message, &row.Provider, &row.ProviderTaskID, &row.SubmittedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
