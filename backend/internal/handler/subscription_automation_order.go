@@ -44,7 +44,12 @@ func AdminSubscriptionAutomationOrderPreview(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read subscription routing history"})
 		return
 	}
-	decision, err := subscriptionautomation.SelectPrimary(counts)
+	health, err := store.ProviderHealth()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read provider health"})
+		return
+	}
+	decision, err := subscriptionautomation.SelectPrimaryWithHealth(counts, health)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no primary provider available"})
 		return

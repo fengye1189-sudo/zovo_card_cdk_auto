@@ -343,6 +343,13 @@ func createTables() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_subscription_watchers_due ON subscription_order_watchers(status,next_check_at,deadline_at)`,
+		`CREATE TABLE IF NOT EXISTS subscription_provider_health (
+			provider TEXT PRIMARY KEY,
+			state TEXT NOT NULL DEFAULT 'DEGRADED',
+			message TEXT DEFAULT '',
+			latency_ms INTEGER NOT NULL DEFAULT 0,
+			checked_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, query := range queries {

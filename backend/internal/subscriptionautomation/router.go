@@ -20,13 +20,32 @@ type RouteDecision struct {
 	Window int `json:"window"`
 }
 
+type HealthState string
+
+const (
+	HealthHealthy HealthState = "HEALTHY"
+	HealthDegraded HealthState = "DEGRADED"
+	HealthUnavailable HealthState = "UNAVAILABLE"
+)
+
 // SelectPrimary uses a deterministic weighted least-used policy. JZ is not a
 // candidate here; rescue selection is a separate state transition.
 func SelectPrimary(counts map[string]int) (RouteDecision, error) {
+	return SelectPrimaryWithHealth(counts, map[string]HealthState{"zovo": HealthHealthy, "orbitcard": HealthHealthy})
+}
+
+func SelectPrimaryWithHealth(counts map[string]int, health map[string]HealthState) (RouteDecision, error) {
 	candidates := []RouteCandidate{
 		{Name: "zovo", Role: "PRIMARY", Weight: 45, RecentCount: counts["zovo"]},
 		{Name: "orbitcard", Role: "PRIMARY", Weight: 45, RecentCount: counts["orbitcard"]},
 	}
+	available := candidates[:0]
+	for _, candidate := range candidates {
+		state := health[candidate.Name]
+		if state == "" { state = HealthDegraded }
+		if state != HealthUnavailable { available = append(available, candidate) }
+	}
+	candidates = available
 	sort.SliceStable(candidates, func(i, j int) bool {
 		left := float64(candidates[i].RecentCount+1) / float64(candidates[i].Weight)
 		right := float64(candidates[j].RecentCount+1) / float64(candidates[j].Weight)

@@ -43,6 +43,16 @@ func (s *Store) PrimaryCounts(window int) (map[string]int, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) ProviderHealth() (map[string]HealthState, error) {
+	if s == nil || s.database == nil { return nil, fmt.Errorf("subscription database is not configured") }
+	out := map[string]HealthState{"zovo": HealthDegraded, "orbitcard": HealthDegraded}
+	rows, err := s.database.Query(`SELECT provider,state FROM subscription_provider_health WHERE provider IN ('zovo','orbitcard')`)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	for rows.Next() { var name, state string; if err := rows.Scan(&name, &state); err != nil { return nil, err }; out[name] = HealthState(state) }
+	return out, rows.Err()
+}
+
 func (s *Store) CreatePreviewOrder(orderID, clientOrderNo, product, selectedProvider string) error {
 	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
 	if orderID == "" || clientOrderNo == "" || product == "" || selectedProvider == "" { return fmt.Errorf("subscription preview fields are required") }
