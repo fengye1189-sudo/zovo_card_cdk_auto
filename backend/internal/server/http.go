@@ -88,6 +88,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	handler.StartCardPlatformInsights(ctx)
 	handler.StartDirectOrderMirror(ctx)
 	subscriptionautomation.StartWatcher(ctx)
+	subscriptionautomation.StartHealthChecker(ctx)
 
 	return &Server{
 		engine: engine,

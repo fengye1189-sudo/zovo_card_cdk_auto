@@ -53,6 +53,12 @@ func (s *Store) ProviderHealth() (map[string]HealthState, error) {
 	return out, rows.Err()
 }
 
+func (s *Store) UpsertProviderHealth(providerName string, state HealthState, message string) error {
+	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
+	_, err := s.database.Exec(`INSERT INTO subscription_provider_health(provider,state,message,checked_at) VALUES(?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(provider) DO UPDATE SET state=excluded.state,message=excluded.message,checked_at=CURRENT_TIMESTAMP`, providerName, state, message)
+	return err
+}
+
 func (s *Store) CreatePreviewOrder(orderID, clientOrderNo, product, selectedProvider string) error {
 	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
 	if orderID == "" || clientOrderNo == "" || product == "" || selectedProvider == "" { return fmt.Errorf("subscription preview fields are required") }
