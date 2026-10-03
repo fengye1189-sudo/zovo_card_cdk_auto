@@ -16,6 +16,31 @@ type WatchTask struct {
 	Deadline time.Time
 }
 
+type AttemptSnapshot struct {
+	AttemptNo int `json:"attempt_no"`
+	Provider string `json:"provider"`
+	Role string `json:"provider_role"`
+	ExternalID string `json:"external_order_id"`
+	Status string `json:"status"`
+	RawStatus string `json:"raw_status"`
+	Unknown bool `json:"unknown"`
+	TerminalFailure bool `json:"terminal_failure"`
+	FailureReason string `json:"failure_reason"`
+}
+
+type OrderSnapshot struct {
+	OrderID string `json:"order_id"`
+	ClientOrderNo string `json:"client_order_no"`
+	Product string `json:"product"`
+	Status string `json:"status"`
+	InitialProvider string `json:"initial_provider"`
+	FinalProvider string `json:"final_provider"`
+	PrimaryFailureCount int `json:"primary_failure_count"`
+	JZRescueUsed bool `json:"jz_rescue_used"`
+	LastError string `json:"last_error"`
+	Attempts []AttemptSnapshot `json:"attempts"`
+}
+
 // Store persists only subscription-automation state. It deliberately has no
 // accessors for CDK, card inventory, or legacy recharge tables.
 type Store struct{ database *sql.DB }
@@ -129,6 +154,19 @@ func (s *Store) MarkFailure(orderID, reason string) error {
 	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
 	_, err := s.database.Exec(`UPDATE subscription_orders SET status='FAILED',last_error=?,updated_at=CURRENT_TIMESTAMP WHERE order_id=?`, reason, orderID)
 	return err
+}
+
+func (s *Store) GetOrderSnapshot(orderID string) (OrderSnapshot, error) {
+	if s == nil || s.database == nil { return OrderSnapshot{}, fmt.Errorf("subscription database is not configured") }
+	var out OrderSnapshot; var rescue int
+	err := s.database.QueryRow(`SELECT order_id,client_order_no,product,status,COALESCE(initial_provider,''),COALESCE(final_provider,''),primary_failure_count,jz_rescue_used,COALESCE(last_error,'') FROM subscription_orders WHERE order_id=?`, orderID).Scan(&out.OrderID, &out.ClientOrderNo, &out.Product, &out.Status, &out.InitialProvider, &out.FinalProvider, &out.PrimaryFailureCount, &rescue, &out.LastError)
+	if err != nil { return out, err }
+	out.JZRescueUsed = rescue != 0
+	rows, err := s.database.Query(`SELECT attempt_no,provider,provider_role,COALESCE(external_order_id,''),status,COALESCE(raw_status,''),is_unknown,is_terminal_failure,COALESCE(failure_reason,'') FROM subscription_order_attempts WHERE order_id=? ORDER BY attempt_no`, orderID)
+	if err != nil { return out, err }
+	defer rows.Close()
+	for rows.Next() { var a AttemptSnapshot; var unknown, terminal int; if err := rows.Scan(&a.AttemptNo, &a.Provider, &a.Role, &a.ExternalID, &a.Status, &a.RawStatus, &unknown, &terminal, &a.FailureReason); err != nil { return out, err }; a.Unknown = unknown != 0; a.TerminalFailure = terminal != 0; out.Attempts = append(out.Attempts, a) }
+	return out, rows.Err()
 }
 
 func boolInt(v bool) int { if v { return 1 }; return 0 }

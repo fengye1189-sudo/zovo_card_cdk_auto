@@ -293,6 +293,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/subscription-automation/simulation", handler.AdminSubscriptionAutomationSimulation)
 			admin.POST("/subscription-automation/orders/preview", handler.AdminSubscriptionAutomationOrderPreview)
 			admin.POST("/subscription-automation/orders", handler.AdminSubscriptionAutomationCreateOrder)
+			admin.GET("/subscription-automation/orders/:id", handler.AdminSubscriptionAutomationOrderStatus)
 			admin.GET("/direct-orders/:id", handler.AdminDirectDetail)
 			admin.POST("/direct-orders/:id/:action", handler.AdminDirectAction)
 			admin.GET("/local-card-choices", handler.LocalCardChoices)
