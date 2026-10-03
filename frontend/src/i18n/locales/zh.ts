@@ -158,6 +158,7 @@ export default {
     resultTitle: '查询结果',
     cdkCode: '卡密',
     useStatus: '使用结果',
+    provider: '卡密来源',
     rechargeEmail: '充值邮箱',
     emailEmpty: '—',
     plan: '套餐',

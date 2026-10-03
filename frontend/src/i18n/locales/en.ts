@@ -158,6 +158,7 @@ export default {
     resultTitle: 'Result',
     cdkCode: 'CDK',
     useStatus: 'Result',
+    provider: 'CDK source',
     rechargeEmail: 'Recharge email',
     emailEmpty: '—',
     plan: 'Plan',

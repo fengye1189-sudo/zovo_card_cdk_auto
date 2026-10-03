@@ -110,6 +110,10 @@
             <span class="text-muted">{{ t('cdkLookup.useStatus') }}</span>
             <span class="font-semibold" :style="{ color: statusColor(result.status) }">{{ statusText(result.status) }}</span>
           </div>
+          <div v-if="result.provider_label" class="flex justify-between items-center gap-3">
+            <span class="text-muted">{{ t('cdkLookup.provider') }}</span>
+            <span class="text-ink text-right">{{ result.provider_label }}<span v-if="result.provider_task_id" class="font-mono text-muted"> · {{ result.provider_task_id }}</span></span>
+          </div>
           <div class="flex justify-between items-center gap-3">
             <span class="text-muted shrink-0">{{ t('cdkLookup.rechargeEmail') }}</span>
             <span class="font-mono text-ink text-right break-all">
@@ -199,6 +203,7 @@
                 <th class="px-3 py-2 font-medium">#</th>
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.cdkCode') }}</th>
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.useStatus') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('cdkLookup.provider') }}</th>
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.rechargeEmail') }}</th>
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.plan') }}</th>
                 <th class="px-3 py-2 font-medium">{{ t('cdkLookup.usedAt') }}</th>
@@ -212,6 +217,7 @@
                 <td class="px-3 py-2 font-semibold whitespace-nowrap" :style="{ color: statusColor(row.status) }">
                   {{ statusText(row.status) }}
                 </td>
+                <td class="px-3 py-2 whitespace-nowrap">{{ row.provider_label || t('cdkLookup.emailEmpty') }}<br /><span v-if="row.provider_task_id" class="font-mono text-muted">{{ row.provider_task_id }}</span></td>
                 <td class="px-3 py-2 font-mono break-all">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2">{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2 text-muted whitespace-nowrap">{{ row.used_at || t('cdkLookup.emailEmpty') }}</td>
@@ -261,6 +267,9 @@ interface CDKStatusResult {
   can_resubmit?: boolean
   account_email?: string
   plan?: string
+  provider?: string
+  provider_label?: string
+  provider_task_id?: string
   used_at?: string
   notes?: string
   message?: string
@@ -384,12 +393,14 @@ async function copyUsedEmails() {
 }
 
 function exportCsv() {
-  const header = ['cdk_code', 'status', 'can_resubmit', 'account_email', 'plan', 'used_at', 'message']
+  const header = ['cdk_code', 'status', 'provider', 'provider_task_id', 'can_resubmit', 'account_email', 'plan', 'used_at', 'message']
   const lines = [header.join(',')]
   for (const row of batchResults.value) {
     const cells = [
       row.cdk_code,
       row.status,
+      row.provider || '',
+      row.provider_task_id || '',
       row.can_resubmit ? '1' : '0',
       row.account_email || '',
       row.plan || '',
