@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/jzactivation"
+	"github.com/tuzi/cdk-recharge-system/internal/orbitcard"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
@@ -20,6 +21,7 @@ func AdminProviderPreview(c *gin.Context) {
 	}
 	registry := provider.NewRegistry()
 	_ = registry.Register(cardplatform.NewProviderAdapter(nil))
+	_ = registry.Register(orbitcard.NewProviderAdapter(nil))
 	_ = registry.Register(jzactivation.NewProviderAdapter(nil))
 	router := provider.NewRouter(registry)
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
@@ -51,6 +53,7 @@ func AdminProviderPreview(c *gin.Context) {
 func AdminProviderHealth(c *gin.Context) {
 	registry := provider.NewRegistry()
 	_ = registry.Register(cardplatform.NewProviderAdapter(nil))
+	_ = registry.Register(orbitcard.NewProviderAdapter(nil))
 	_ = registry.Register(jzactivation.NewProviderAdapter(nil))
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()

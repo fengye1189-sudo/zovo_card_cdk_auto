@@ -283,6 +283,10 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/automation/notifications/retry-unknown", handler.AdminNotificationRetryUnknown)
 			admin.GET("/providers/preview", handler.AdminProviderPreview)
 			admin.GET("/providers/health", handler.AdminProviderHealth)
+			// 第二自动化（GPT 订阅）隔离入口：默认 disabled，只读预览，
+			// 不会接管现有 CDK/卡池/订单流程。
+			admin.GET("/subscription-automation/status", handler.AdminSubscriptionAutomationStatus)
+			admin.GET("/subscription-automation/preview", handler.AdminSubscriptionAutomationPreview)
 			admin.GET("/direct-orders/:id", handler.AdminDirectDetail)
 			admin.POST("/direct-orders/:id/:action", handler.AdminDirectAction)
 			admin.GET("/local-card-choices", handler.LocalCardChoices)
