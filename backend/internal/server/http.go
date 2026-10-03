@@ -289,6 +289,7 @@ func setupRoutes(r *gin.Engine) {
 			// 不会接管现有 CDK/卡池/订单流程。
 			admin.GET("/subscription-automation/status", handler.AdminSubscriptionAutomationStatus)
 			admin.GET("/subscription-automation/preview", handler.AdminSubscriptionAutomationPreview)
+			admin.GET("/subscription-automation/simulation", handler.AdminSubscriptionAutomationSimulation)
 			admin.POST("/subscription-automation/orders/preview", handler.AdminSubscriptionAutomationOrderPreview)
 			admin.GET("/direct-orders/:id", handler.AdminDirectDetail)
 			admin.POST("/direct-orders/:id/:action", handler.AdminDirectAction)
