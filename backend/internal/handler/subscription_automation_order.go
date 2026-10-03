@@ -38,8 +38,19 @@ func AdminSubscriptionAutomationOrderPreview(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "client_order_no and product are required"})
 		return
 	}
+	store := subscriptionautomation.NewStore(nil)
+	counts, err := store.PrimaryCounts(1000)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read subscription routing history"})
+		return
+	}
+	decision, err := subscriptionautomation.SelectPrimary(counts)
+	if err != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no primary provider available"})
+		return
+	}
 	orderID := "sub-preview-" + time.Now().UTC().Format("20060102150405.000000000")
-	if err := subscriptionautomation.NewStore(nil).CreateOrder(orderID, req.ClientOrderNo, req.Product); err != nil {
+	if err := store.CreatePreviewOrder(orderID, req.ClientOrderNo, req.Product, decision.Provider); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": "client_order_no already exists or order could not be recorded"})
 		return
 	}
@@ -50,7 +61,11 @@ func AdminSubscriptionAutomationOrderPreview(c *gin.Context) {
 		"client_order_no": req.ClientOrderNo,
 		"product": req.Product,
 		"payment_region": req.PaymentRegion,
-		"provider": "not_selected",
+		"provider": decision.Provider,
+		"provider_role": decision.Role,
+		"route_weight": decision.Weight,
+		"recent_primary_count": decision.RecentCount,
+		"route_window": decision.Window,
 		"upstream_called": false,
 		"message": "订单已写入隔离订阅表，尚未调用任何上游",
 	})

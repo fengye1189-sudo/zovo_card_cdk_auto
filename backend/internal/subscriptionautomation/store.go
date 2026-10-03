@@ -32,6 +32,29 @@ func (s *Store) CreateOrder(orderID, clientOrderNo, product string) error {
 	return err
 }
 
+func (s *Store) PrimaryCounts(window int) (map[string]int, error) {
+	if s == nil || s.database == nil { return nil, fmt.Errorf("subscription database is not configured") }
+	if window < 1 || window > 10000 { window = 1000 }
+	rows, err := s.database.Query(`SELECT provider,COUNT(*) FROM (SELECT provider FROM subscription_order_attempts WHERE provider_role='PRIMARY' ORDER BY id DESC LIMIT ?) GROUP BY provider`, window)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	out := map[string]int{"zovo": 0, "orbitcard": 0}
+	for rows.Next() { var name string; var count int; if err := rows.Scan(&name, &count); err != nil { return nil, err }; out[name] = count }
+	return out, rows.Err()
+}
+
+func (s *Store) CreatePreviewOrder(orderID, clientOrderNo, product, selectedProvider string) error {
+	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
+	if orderID == "" || clientOrderNo == "" || product == "" || selectedProvider == "" { return fmt.Errorf("subscription preview fields are required") }
+	tx, err := s.database.Begin(); if err != nil { return err }
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(`INSERT INTO subscription_orders(order_id,client_order_no,product,status,initial_provider) VALUES(?,?,?,'PREVIEW_ONLY',?)`, orderID, clientOrderNo, product, selectedProvider)
+	if err != nil { return err }
+	_, err = tx.Exec(`INSERT INTO subscription_order_attempts(order_id,attempt_no,provider,provider_role,client_order_no,idempotency_key,status) VALUES(?,1,?,'PRIMARY',?,?,'PREVIEW_ONLY')`, orderID, selectedProvider, clientOrderNo, clientOrderNo)
+	if err != nil { return err }
+	return tx.Commit()
+}
+
 func (s *Store) RecordAttempt(orderID string, attemptNo int, provider, role, clientOrderNo, idem, externalID, status, rawStatus, reason string, unknown, terminal bool) error {
 	if s == nil || s.database == nil { return fmt.Errorf("subscription database is not configured") }
 	if attemptNo < 1 || orderID == "" || provider == "" || clientOrderNo == "" || idem == "" { return fmt.Errorf("subscription attempt fields are required") }
