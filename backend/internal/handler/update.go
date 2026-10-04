@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -290,14 +291,14 @@ func runSeamlessUpdate(target, username string) {
 	}
 	// 轮转：web -> web.prev, web.next -> web
 	if _, err := os.Stat(wd); err == nil {
-		if err := os.Rename(wd, webPrev); err != nil {
+		if err := moveDir(wd, webPrev); err != nil {
 			failUpdate("切换 web 失败: " + err.Error())
 			return
 		}
 	}
-	if err := os.Rename(webNext, wd); err != nil {
+	if err := moveDir(webNext, wd); err != nil {
 		// 尝试回滚
-		_ = os.Rename(webPrev, wd)
+		_ = moveDir(webPrev, wd)
 		failUpdate("启用新 web 失败: " + err.Error())
 		return
 	}
@@ -685,6 +686,21 @@ func copyDir(src, dst string) error {
 		}
 		return copyFile(path, target)
 	})
+}
+
+// moveDir prefers an atomic rename, but falls back to copy-and-remove when
+// staging and the web volume are on different filesystems (EXDEV). This is
+// required in containers where /tmp may be a separate mount from /app/web.
+func moveDir(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+	if err := copyDir(src, dst); err != nil {
+		return err
+	}
+	return os.RemoveAll(src)
 }
 
 func humanBytes(n int64) string {
