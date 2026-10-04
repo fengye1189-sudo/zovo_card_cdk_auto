@@ -331,14 +331,27 @@ func stopFundingForMissingCards(scope string, now int64) {
 	missing, err := db.DB.Query(`SELECT card_id FROM automation_inventory_snapshot
 		WHERE scope=? AND present=0 AND card_id>0`, scope)
 	if err == nil {
+		missingIDs := []int64{}
 		for missing.Next() {
 			var cardID int64
 			if missing.Scan(&cardID) == nil {
-				autoResolve(fmt.Sprintf("money-card:%d", cardID))
-				autoResolve(fmt.Sprintf("topup:%d", cardID))
+				missingIDs = append(missingIDs, cardID)
 			}
 		}
 		missing.Close()
+		for _, cardID := range missingIDs {
+			autoResolve(fmt.Sprintf("money-card:%d", cardID))
+			autoResolve(fmt.Sprintf("topup:%d", cardID))
+			autoResolve(fmt.Sprintf("card-renewal:%d", cardID))
+			autoResolve(fmt.Sprintf("card-renewal-state:%d", cardID))
+			// A provider-deleted card is no longer an eligible local lifecycle
+			// target. Close only this card's lifecycle row; do not alter global
+			// automation switches or other cards.
+			_, _ = db.DB.Exec(`UPDATE automation_card_lifecycle
+				SET phase='closed',retire_state='closed',retire_reason='provider_deleted',
+				updated_at=?,closed_at=CASE WHEN closed_at=0 THEN ? ELSE closed_at END
+				WHERE card_id=?`, now, now, cardID)
+		}
 	}
 	rows, err := db.DB.Query(`SELECT m.id,
 		CASE WHEN m.action='pro5x_reserve_topup' AND m.result_card_id>0 THEN m.result_card_id ELSE m.card_id END,
@@ -352,7 +365,11 @@ func stopFundingForMissingCards(scope string, now int64) {
 	if err != nil {
 		return
 	}
-	defer rows.Close()
+	type missingFunding struct {
+		id, action string
+		cardID     int64
+	}
+	operations := []missingFunding{}
 	for rows.Next() {
 		var id string
 		var cardID int64
@@ -360,9 +377,13 @@ func stopFundingForMissingCards(scope string, now int64) {
 		if rows.Scan(&id, &cardID, &action) != nil {
 			continue
 		}
+		operations = append(operations, missingFunding{id: id, action: action, cardID: cardID})
+	}
+	rows.Close()
+	for _, op := range operations {
 		result, updateErr := db.DB.Exec(`UPDATE automation_money
 			SET state='card_deleted_no_refill'
-			WHERE id=? AND scope=? AND state IN ('inflight','pending','unknown')`, id, scope)
+			WHERE id=? AND scope=? AND state IN ('inflight','pending','unknown')`, op.id, scope)
 		if updateErr != nil {
 			continue
 		}
@@ -370,12 +391,12 @@ func stopFundingForMissingCards(scope string, now int64) {
 		if changed != 1 {
 			continue
 		}
-		key := fmt.Sprintf("money-card:%d", cardID)
+		key := fmt.Sprintf("money-card:%d", op.cardID)
 		autoResolve(key)
 		// Older releases used a topup:<card> key for pricing/amount warnings;
 		// clear it as well so a card that is gone does not leave a stale alert.
-		autoResolve(fmt.Sprintf("topup:%d", cardID))
-		db.WriteAudit("automation", "funding_skipped_deleted_card", fmt.Sprintf("operation=%s card=%d action=%s state=card_deleted_no_refill at=%d", id, cardID, action, now), "")
+		autoResolve(fmt.Sprintf("topup:%d", op.cardID))
+		db.WriteAudit("automation", "funding_skipped_deleted_card", fmt.Sprintf("operation=%s card=%d action=%s state=card_deleted_no_refill at=%d", op.id, op.cardID, op.action, now), "")
 	}
 }
 
@@ -701,7 +722,10 @@ func maintainAutomationCards(ctx context.Context) {
 		var product cardplatform.AutomationProduct
 		var ok bool
 		if p.AutoProduct {
-			product, selectionMode, e = selectAutomationProduct(products, p.InitAmount, now)
+			// The upstream product order is authoritative: it reflects the
+			// card-head priority configured in Zovo. Local success-rate ranking
+			// remains available for reporting, but must not override that choice.
+			product, selectionMode, e = selectUpstreamAutomationProduct(products, p.InitAmount)
 			if e != nil {
 				autoAlert("money", 0, "当前没有符合开卡金额和商户限制的可用卡头，未开卡。")
 				return

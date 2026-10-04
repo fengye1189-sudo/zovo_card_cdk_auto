@@ -352,6 +352,23 @@ func selectAutomationProduct(products []cardplatform.AutomationProduct, amount, 
 	return exploration[0].Product, "explore", nil
 }
 
+// selectUpstreamAutomationProduct follows the order returned by Zovo's
+// /products endpoint. Zovo exposes its configured card-head priority through
+// that order; automatic opening must respect it instead of replacing it with
+// our local success-rate ranking or exploration policy.
+func selectUpstreamAutomationProduct(products []cardplatform.AutomationProduct, amount int64) (cardplatform.AutomationProduct, string, error) {
+	for _, product := range products {
+		if strings.TrimSpace(product.Code) == "" || (product.Enabled != nil && !*product.Enabled) {
+			continue
+		}
+		if _, ok := productCost(product, amount, true); !ok {
+			continue
+		}
+		return product, "upstream_priority", nil
+	}
+	return cardplatform.AutomationProduct{}, "", fmt.Errorf("no eligible upstream-priority product")
+}
+
 func removeRetiredCardFromSettings(cardID int64) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		raw, err := db.GetSetting("local_cdk_settings")
