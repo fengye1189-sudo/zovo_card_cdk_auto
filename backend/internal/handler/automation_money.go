@@ -202,7 +202,18 @@ func maintainCardRenewalAlerts(now int64) {
 }
 
 func shouldOpenAutomationCard(ready int) bool {
-	return ready < automationReadyCardFloor
+	return ready <= automationReadyCardFloor
+}
+
+// hasPendingPlusDemand prevents proactive card creation. A Plus card is only
+// opened when there is an actual reserved/review order that may need another
+// healthy card; dedicated 5X orders use their own reserve path.
+func hasPendingPlusDemand() bool {
+	var count int
+	err := db.DB.QueryRow(`SELECT COUNT(*) FROM local_cdks
+		WHERE status IN ('reserved','review')
+		  AND plan NOT IN ('pro_5x','pro_5x_cl')`).Scan(&count)
+	return err == nil && count > 0
 }
 
 type inventoryScanError struct{ reason string }
@@ -688,7 +699,7 @@ func maintainAutomationCards(ctx context.Context) {
 			}
 		}
 	}
-	if action == "" && p.Open && !dedicatedMoneyBlocked() && shouldOpenAutomationCard(len(ready)) {
+	if action == "" && p.Open && !dedicatedMoneyBlocked() && hasPendingPlusDemand() && shouldOpenAutomationCard(len(ready)) {
 		// An opened but not enrolled card must not cause an endless sequence of new cards.
 		rows, e := db.DB.Query("SELECT result_card_id FROM automation_money WHERE action='open' AND result_card_id>0 AND scope=?", scope)
 		if e != nil {
