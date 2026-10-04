@@ -11,7 +11,9 @@ import (
 )
 
 const proInitialMinor int64 = 15000
-const pro5xInitialMinor int64 = 10000
+// The dedicated 5X reserve target is 95 USDT.  A card is topped up only by
+// the shortfall (subject to the provider's minimum recharge amount).
+const pro5xInitialMinor int64 = 9500
 // proDailyMaximum is the owner-authorized shared rolling 24-hour funds cap.
 // Keep this safety ceiling aligned with automation_policy.daily_budget_minor.
 const proDailyMaximum int64 = 200000

@@ -432,6 +432,38 @@ func TestAutomationInventorySnapshotMarksRemovedHistoricalCard(t *testing.T) {
 	}
 }
 
+func TestMissingCardStopsPendingFundingWithoutClaimingRefund(t *testing.T) {
+	newAutoFixture(t)
+	scope := financeScope()
+	now := time.Now().Unix()
+	if _, err := db.DB.Exec(`INSERT INTO automation_inventory_snapshot
+		(scope,card_id,present,provider_status,synced_at) VALUES(?,123,0,'DELETED',?)`, scope, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO automation_money
+		(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
+		VALUES('deleted-card-funding','topup',123,1576,1592,500,?,'unknown',?)`, scope, now-3600); err != nil {
+		t.Fatal(err)
+	}
+	autoAlert("money-card:123", 0, "资金请求超过 30 分钟仍未核查到预期余额")
+	stopFundingForMissingCards(scope, now)
+	var state string
+	if err := db.DB.QueryRow("SELECT state FROM automation_money WHERE id='deleted-card-funding'").Scan(&state); err != nil || state != "card_deleted_no_refill" {
+		t.Fatalf("missing card funding was not terminalized: %q %v", state, err)
+	}
+	var resolved int
+	if err := db.DB.QueryRow("SELECT resolved FROM automation_alerts WHERE alert_key='money-card:123'").Scan(&resolved); err != nil || resolved != 1 {
+		t.Fatalf("card funding alert was not resolved: %v", err)
+	}
+	if automationBlocked() {
+		t.Fatal("deleted-card operation still blocks automation")
+	}
+	var evidence int
+	if err := db.DB.QueryRow("SELECT COUNT(*) FROM automation_money_evidence WHERE operation_id='deleted-card-funding'").Scan(&evidence); err != nil || evidence != 0 {
+		t.Fatalf("deleted-card handling incorrectly claimed a refund or charge result: %d %v", evidence, err)
+	}
+}
+
 func TestAutomationUnknownTopupRequiresAndAcceptsExactLedgerEvidence(t *testing.T) {
 	a := newAutoFixture(t)
 	p := moneyPolicy()

@@ -5,7 +5,7 @@
     <el-alert v-if="draftNotice" :title="draftNotice" type="warning" :closable="false">
       <template #default><el-button text type="warning" @click="discardDraft">放弃草稿并恢复服务器已保存的规则</el-button></template>
     </el-alert>
-<div class="grid gap-3 sm:grid-cols-3"><div class="card"><p class="text-sm text-muted">后台心跳</p><p class="text-lg font-semibold mt-2">{{ health }}</p><p class="text-sm">{{ date(report.heartbeat) }}</p></div><div class="card"><p class="text-sm text-muted">新操作状态</p><p class="text-lg font-semibold mt-2">{{ report.blocked ? '已暂停 / 等待资金核对' : '按已保存规则执行' }}</p><p class="text-sm">充值还受「卡密管理」的开关和限额控制</p></div><div class="card"><p class="text-sm text-muted">待处理提醒</p><p class="text-2xl font-semibold mt-2">{{ report.alerts.length }}</p><p class="text-sm">外部提醒请在「通知与回复」中配置并启用</p></div></div>
+<div class="grid gap-3 sm:grid-cols-3"><div class="card"><p class="text-sm text-muted">后台心跳</p><p class="text-lg font-semibold mt-2">{{ health }}</p><p class="text-sm">{{ date(report.heartbeat) }}</p></div><div class="card"><p class="text-sm text-muted">新操作状态</p><p class="text-lg font-semibold mt-2">{{ report.blocked ? '新开卡等待核对' : '按已保存规则执行' }}</p><p class="text-sm">异常资金只隔离对应卡/开卡操作，其他健康卡继续运行</p></div><div class="card"><p class="text-sm text-muted">待处理提醒</p><p class="text-2xl font-semibold mt-2">{{ report.alerts.length }}</p><p class="text-sm">外部提醒请在「通知与回复」中配置并启用</p></div></div>
     <div class="card space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-2"><h2 class="text-xl font-bold">运行规则</h2><p role="status" class="text-sm">{{ dirty ? '有未保存的修改' : '已读取服务器规则' }} · 版本 {{ version }}<span v-if="savedAt"> · {{ savedAt }}</span></p></div>
       <el-form label-position="top" :disabled="!ready || saving">
@@ -17,12 +17,12 @@
         <el-divider />
         <h3 class="text-lg font-semibold mb-4">资金自动化（从 Zovo 平台余额转入卡，不是自动充 USDT）</h3>
         <el-alert title="资金开关默认关闭。只管理你勾选的卡及明确授权自动开出的卡；拒付后不换卡重付。资金预算仅覆盖自动开卡和补款，不是订阅扣款总预算。" type="warning" :closable="false" class="mb-4" />
-        <p class="text-sm text-muted mb-4">GPTPRO5x卡冲升级与 Pro 20X 商品在 <router-link class="app-link" to="/ops/products">商品与套餐</router-link>管理。客户确认兑换后分别为专卡初充 $120 / $150；两者共用过去 24 小时预算、每日开卡数量及平台余额保留额，普通卡的单次 $22 资金上限不用于 Pro 专卡。未确认到账不会提交升级付款。</p>
+        <p class="text-sm text-muted mb-4">5X 专卡与 Pro 20X 商品在 <router-link class="app-link" to="/ops/products">商品与套餐</router-link>管理。5X 专卡目标余额为 $95，订单需要超过目标时只补足差额；5X 始终独立使用，不会进入 Plus 卡池。未确认到账不会提交升级付款。</p>
         <p class="text-sm text-muted mb-4">普通 Plus 卡按「卡密管理」中的支付余额门槛动态补足；差额不足 $10 时按平台最低 $10 补款。卡内余额上限只是硬上限，不是每次补款目标。</p>
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <el-form-item label="自动补充已勾选卡的余额"><el-switch v-model="settings.topup_enabled" /><p class="hint">付款结果已确认且余额低于阈值时可再次补款；有在途或待核对订单、资金未确认时不补款。仍受每日预算和单次上限限制；5X 专卡完成 3 次 5X 后才进入 Plus 池。</p></el-form-item>
+        <el-form-item label="自动补充已勾选卡的余额"><el-switch v-model="settings.topup_enabled" /><p class="hint">只补健康、未开启续费且未被占用的卡。单张卡的在途或待核对资金只隔离该卡，其他健康卡继续运行；5X 专卡永不进入 Plus 卡池。</p></el-form-item>
           <el-form-item label="两次明确拒付后自动销卡退款"><el-switch v-model="settings.retire_enabled" /><p class="hint">同一卡累计第 2 次上游明确拒付后进入待销；第 1 次只记入健康记录。销卡前会确认没有在途订单或待核对资金，结果不明时不会重复提交。</p></el-form-item>
-          <el-form-item label="健康工作卡只剩 1 张时自动补开"><el-switch v-model="settings.open_enabled" /><p class="hint">维持至少 2 张健康工作卡；可用卡只剩 1 张时补开 1 张。到账核查期间或已有自动开卡尚未加入支付名单时，不会重复开卡，并始终受预算及每日开卡上限限制。</p></el-form-item>
+          <el-form-item label="健康工作卡不超过 2 张时自动补开"><el-switch v-model="settings.open_enabled" /><p class="hint">可用健康卡 ≤2 张时补到 3 张；到账核查期间或已有自动开卡尚未加入支付名单时，不会重复开卡，并始终受预算及每日开卡上限限制。</p></el-form-item>
           <el-form-item label="按 Zovo 当前产品自动选卡头"><el-switch v-model="settings.auto_product_enabled" /><p class="hint">开启后不固定产品码：每次开卡先读取 Zovo 当前可用产品、价格和金额限制，再结合本站近 30 天成功率选择合格卡头；Zovo 下架或限额变化会自动生效。</p></el-form-item>
           <el-form-item label="自动开出的卡允许加入支付名单"><el-switch v-model="settings.enroll_created_cards" /><p class="hint">仅适用于本站自动开卡，确认到账后加入；其他新卡不会自动勾选。</p></el-form-item>
           <el-form-item v-for="field in moneyFields" :key="field.key" :label="field.label+'（USD）'"><el-input-number :model-value="(settings[field.key] || 0)/100" @update:model-value="value=>settings[field.key]=Math.round((value || 0)*100)" :min="0" :max="1000000" :precision="2" :step="1" /><p class="hint">{{ field.hint }}</p></el-form-item>
@@ -81,7 +81,7 @@ function validateSettings(){
 }
 function showSaveError(message:string){error.value=message;requestAnimationFrame(()=>document.querySelector('[data-save-error]')?.scrollIntoView({behavior:'smooth',block:'center'}))}
 async function save(){if(!ready.value||saving.value)return;const invalid=validateSettings();if(invalid){showSaveError(invalid);return}error.value='';saving.value=true;try{
- const mode=`后台查单：${settings.sync_enabled?'开':'关'}；自动取消续费：${settings.renewal_enabled?'开':'关'}；自动补款：${settings.topup_enabled?'开':'关'}；自动销卡：${settings.retire_enabled?'开':'关'}；自动开卡：${settings.open_enabled?'开':'关'}；高成功率卡头：${settings.auto_product_enabled?'开':'关'}；总暂停：${settings.paused?'开':'关'}。\n可用健康卡只剩 1 张时补开 1 张，维持至少 2 张；24 小时自动资金预算 $${((settings.daily_budget_minor||0)/100).toFixed(2)}，单次上限 $${((settings.max_operation_minor||0)/100).toFixed(2)}。\n保存后服务器按规则执行，可能消耗 Zovo 余额；达到规则会永久销卡并由 Zovo 退回卡内余额。已发出的请求不会被撤销。确认保存？`
+const mode=`后台查单：${settings.sync_enabled?'开':'关'}；自动取消续费：${settings.renewal_enabled?'开':'关'}；自动补款：${settings.topup_enabled?'开':'关'}；自动销卡：${settings.retire_enabled?'开':'关'}；自动开卡：${settings.open_enabled?'开':'关'}；高成功率卡头：${settings.auto_product_enabled?'开':'关'}；总暂停：${settings.paused?'开':'关'}。\n可用健康卡 ≤2 张时补到 3 张；5X 专卡目标余额 $95 且独立使用；24 小时自动资金预算 $${((settings.daily_budget_minor||0)/100).toFixed(2)}，单次上限 $${((settings.max_operation_minor||0)/100).toFixed(2)}。\n保存后服务器按规则执行，可能消耗 Zovo 余额；达到规则会永久销卡并由 Zovo 退回卡内余额。已发出的请求不会被撤销。确认保存？`
  if(!await dialog.confirm(mode,{title:'确认自动化授权',okText:'确认规则并保存',cancelText:'暂不保存',danger:true}))return
  const d=await api('settings',{method:'PUT',body:JSON.stringify({settings,version:version.value,confirmed:true})});Object.assign(settings,d.settings);version.value=d.version;serverSnapshot.value=JSON.stringify(settings);savedAt.value='保存于 '+new Date().toLocaleTimeString();try{localStorage.removeItem(draftKey)}catch{};draftNotice.value='';dialog.toast('规则已保存');await loadStatus()
  }catch(e:any){showSaveError('规则尚未保存：'+e.message)}finally{saving.value=false}}

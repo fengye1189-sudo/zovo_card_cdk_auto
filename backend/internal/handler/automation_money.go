@@ -61,15 +61,15 @@ func productCost(p cardplatform.AutomationProduct, amount int64, open bool) (int
 
 const legacyInventoryAlert = "无法完整核查卡余额，已跳过自动补款与开卡。卡片超过 100 张时需要调整扫描方案。"
 
-// Keep two funded working cards. Once only one eligible card remains, prepare
-// one replacement before the final card becomes unavailable. Pending/unknown
+// Keep at least two healthy working cards. When the available healthy set is
+// at or below two, replenish until three are available. Pending/unknown
 // funding, an opened-but-not-enrolled card, the rolling budget and the daily
 // opening limit continue to prevent repeated openings.
 const automationReadyCardFloor = 2
 
 // Keep a small funded working set. Other selected cards remain available for
-// rotation, but are only topped up when the working set drops below two.
-const automationFundedCardTarget = 2
+// rotation, but are only topped up when the working set drops to two or fewer.
+const automationFundedCardTarget = 3
 
 const (
 	cardRenewalReminderWindow = 72 * time.Hour
@@ -285,7 +285,7 @@ func persistAutomationInventory(inventory []cardplatform.CardChoice, scope strin
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec("UPDATE automation_inventory_snapshot SET present=0,synced_at=? WHERE scope=?", now, scope); err != nil {
+	if _, err = tx.Exec("UPDATE automation_inventory_snapshot SET present=0,provider_status='DELETED',synced_at=? WHERE scope=?", now, scope); err != nil {
 		return err
 	}
 	// Ensure cards referenced only by historical money operations also receive
@@ -313,6 +313,72 @@ func persistAutomationInventory(inventory []cardplatform.CardChoice, scope strin
 	}
 	return tx.Commit()
 }
+
+// stopFundingForMissingCards closes only pending/unknown recharge operations
+// whose card disappeared from a complete provider inventory scan.  A deleted
+// card cannot receive another recharge, so leaving the operation pending would
+// keep producing misleading funding alerts and would block future work on a
+// card that no longer exists.  The terminal state is deliberately distinct
+// from balance_verified/no_charge_verified: it records that the card vanished
+// without claiming that an already-submitted provider charge was refunded.
+func stopFundingForMissingCards(scope string, now int64) {
+	if strings.TrimSpace(scope) == "" || now <= 0 {
+		return
+	}
+	// Clear card-scoped alerts even when the original operation was already
+	// archived by an older release. The full inventory scan is the evidence that
+	// this card is no longer a funding target.
+	missing, err := db.DB.Query(`SELECT card_id FROM automation_inventory_snapshot
+		WHERE scope=? AND present=0 AND card_id>0`, scope)
+	if err == nil {
+		for missing.Next() {
+			var cardID int64
+			if missing.Scan(&cardID) == nil {
+				autoResolve(fmt.Sprintf("money-card:%d", cardID))
+				autoResolve(fmt.Sprintf("topup:%d", cardID))
+			}
+		}
+		missing.Close()
+	}
+	rows, err := db.DB.Query(`SELECT m.id,
+		CASE WHEN m.action='pro5x_reserve_topup' AND m.result_card_id>0 THEN m.result_card_id ELSE m.card_id END,
+		m.action
+		FROM automation_money m
+		LEFT JOIN automation_inventory_snapshot s
+			ON s.scope=m.scope AND s.card_id=CASE WHEN m.action='pro5x_reserve_topup' AND m.result_card_id>0 THEN m.result_card_id ELSE m.card_id END
+			AND s.present=1
+		WHERE m.scope=? AND m.state IN ('inflight','pending','unknown')
+			AND m.action IN ('topup','pro5x_reserve_topup') AND s.card_id IS NULL`, scope)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var cardID int64
+		var action string
+		if rows.Scan(&id, &cardID, &action) != nil {
+			continue
+		}
+		result, updateErr := db.DB.Exec(`UPDATE automation_money
+			SET state='card_deleted_no_refill'
+			WHERE id=? AND scope=? AND state IN ('inflight','pending','unknown')`, id, scope)
+		if updateErr != nil {
+			continue
+		}
+		changed, _ := result.RowsAffected()
+		if changed != 1 {
+			continue
+		}
+		key := fmt.Sprintf("money-card:%d", cardID)
+		autoResolve(key)
+		// Older releases used a topup:<card> key for pricing/amount warnings;
+		// clear it as well so a card that is gone does not leave a stale alert.
+		autoResolve(fmt.Sprintf("topup:%d", cardID))
+		db.WriteAudit("automation", "funding_skipped_deleted_card", fmt.Sprintf("operation=%s card=%d action=%s state=card_deleted_no_refill at=%d", id, cardID, action, now), "")
+	}
+}
+
 func maintainAutomationCards(ctx context.Context) {
 	now := time.Now().Unix()
 	lock, e := db.DB.Exec("UPDATE automation_runtime SET money_after=? WHERE id=1 AND money_after<=?", now+300, now)
@@ -347,6 +413,10 @@ func maintainAutomationCards(ctx context.Context) {
 	if e != nil {
 		return
 	}
+	// The inventory is now authoritative. Do this before normal reconciliation
+	// so a removed card cannot emit the old 30-minute funding warning or be
+	// considered for another recharge in the same cycle.
+	stopFundingForMissingCards(scope, now)
 	renewalStates := loadCardRenewalStates(inventory, now)
 	verifyMoneyOperationsForScope(inventory, p, scope)
 	if !dedicatedMoneyBlocked() {
@@ -362,22 +432,16 @@ func maintainAutomationCards(ctx context.Context) {
 		_ = db.DB.QueryRow("SELECT COUNT(*) FROM automation_money WHERE state IN ('inflight','unknown') AND action IN ('open','pro_open')").Scan(&remaining)
 		if remaining > 0 {
 			autoAlert("money", 0, "存在未确认的开卡资金操作，已暂停新的开卡；其他卡片的补款会按卡片范围继续核对。请先在 Zovo 核对，本站不会自动重试。")
-			return
 		}
 	}
 	reconcilePro5xReserve(inventory)
 	reconcileCreatedCardEnrollment(inventory, p)
-	// A pending or uncertain provider-accepted money operation is only
-	// reconciled in this cycle. Even when it is confirmed, defer any new funding
-	// decision until the next cycle so one delayed observation cannot trigger
-	// back-to-back spending on the same card.
-	hasMoneyHold := pending > 0 || uncertain > 0
-	// A stale operation on another card must not prevent the Pro 5X reserve
-	// from rotating to a different healthy card. Ordinary funding remains
-	// paused below until all existing holds are reconciled.
-	if dedicatedMoneyBlocked() {
-		return
-	}
+	// A pending or uncertain provider-accepted money operation is reconciled in
+	// this cycle. It is intentionally not a global stop: only the card (or the
+	// same opening operation) remains blocked by the reservation predicates.
+	// Unresolved opening operations only block another opening. Funding a
+	// different healthy card continues; the reservation SQL below retains the
+	// opening-specific guard and the card-specific guard for top-ups.
 	products, e := cli.AutomationProducts(ctx)
 	if e != nil {
 		autoAlert("money", 0, "无法核查产品费率，未进行资金操作。")
@@ -399,9 +463,6 @@ func maintainAutomationCards(ctx context.Context) {
 	// Chile orders. A claimed reserve is replenished instead of opening another
 	// card for the next order.
 	if maintainPro5xReserve(ctx, cli, inventory, p, version, scope, productMap, now) {
-		return
-	}
-	if hasMoneyHold {
 		return
 	}
 	reconcileRetiredCards(inventory, now)
@@ -446,8 +507,8 @@ func maintainAutomationCards(ctx context.Context) {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	// All historical Pro 5X cards are ordinary cards now. Only the single
-	// currently claimed reserve card stays out of this pool.
+	// 5X cards remain dedicated and are always excluded from the ordinary Plus
+	// funding pool. The reserve card is also excluded while it is claimed.
 	rows, selectErr := db.DB.Query(`SELECT p.card_id
 		FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
 		WHERE p.card_id>0 AND p.state='completed' AND c.plan IN ('pro_5x','pro_5x_cl') AND c.status='consumed'`)
@@ -606,7 +667,7 @@ func maintainAutomationCards(ctx context.Context) {
 			}
 		}
 	}
-	if action == "" && p.Open && shouldOpenAutomationCard(len(ready)) {
+	if action == "" && p.Open && !dedicatedMoneyBlocked() && shouldOpenAutomationCard(len(ready)) {
 		// An opened but not enrolled card must not cause an endless sequence of new cards.
 		rows, e := db.DB.Query("SELECT result_card_id FROM automation_money WHERE action='open' AND result_card_id>0 AND scope=?", scope)
 		if e != nil {
@@ -696,14 +757,15 @@ func maintainAutomationCards(ctx context.Context) {
 	defer tx.Rollback()
 	r, e := tx.Exec(`INSERT INTO automation_money(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
  SELECT ?,?,?,?,?,?,?,'inflight',? WHERE ?<=? AND ?>0
- AND COALESCE((SELECT SUM(reserved_minor) FROM automation_money WHERE created_at>?),0)+?<=?
-	 AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND action IN ('open','pro_open'))
-	 AND (?<>'open' OR (SELECT COUNT(*) FROM automation_money WHERE action IN ('open','pro_open','pro5x_reserve_open') AND created_at>?)<?)
- AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?)
+		AND COALESCE((SELECT SUM(reserved_minor) FROM automation_money WHERE created_at>?),0)+?<=?
+		AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND action IN ('open','pro_open'))
+		AND (?<>'open' OR (SELECT COUNT(*) FROM automation_money WHERE action IN ('open','pro_open','pro5x_reserve_open') AND created_at>?)<?)
+		AND (?<>'topup' OR NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND (card_id=? OR result_card_id=?)))
+		AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?)
  AND (?=0 OR NOT EXISTS(SELECT 1 FROM local_cdks WHERE card_id=? AND status IN ('reserved','review')))
 	 AND (?<>'topup' OR (EXISTS(SELECT 1 FROM local_card_cycles WHERE card_id=?)
 	 AND EXISTS(SELECT 1 FROM automation_card_lifecycle WHERE card_id=? AND retire_state='active')))
-	 AND EXISTS(SELECT 1 FROM site_settings WHERE key='local_cdk_settings' AND value=?)`, id, action, cardID, amount, cost, before, scope, now, cost, p.MaxOperation, cost, now-86400, cost, p.DailyBudget, action, now-86400, p.DailyOpen, version, cardID, cardID, action, cardID, cardID, localRaw)
+		AND EXISTS(SELECT 1 FROM site_settings WHERE key='local_cdk_settings' AND value=?)`, id, action, cardID, amount, cost, before, scope, now, cost, p.MaxOperation, cost, now-86400, cost, p.DailyBudget, action, now-86400, p.DailyOpen, action, cardID, cardID, version, cardID, cardID, action, cardID, cardID, localRaw)
 	if e != nil {
 		autoAlert("money", 0, "无法预留资金预算，未进行操作。")
 		return

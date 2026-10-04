@@ -301,7 +301,7 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	spendable, err := cli.AutomationSpendable(ctx)
 	wallet, walletOK := usdMinor(spendable)
 	if err != nil || !walletOK || wallet-cost < p.WalletFloor {
-		autoAlert("pro5x_reserve", 0, "平台可消费余额不足以准备 $100 的 Pro 5X 专卡并保留安全余额，未开卡。")
+		autoAlert("pro5x_reserve", 0, "平台可消费余额不足以准备 $95 的 Pro 5X 专卡并保留安全余额，未开卡。")
 		return false
 	}
 	operationID, err := localRandom()
@@ -322,7 +322,7 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 		(id,action,card_id,amount_minor,reserved_minor,before_minor,scope,state,created_at)
 		SELECT ?,'pro5x_reserve_open',0,?,?,0,?,'inflight',?
 		WHERE COALESCE((SELECT SUM(reserved_minor) FROM automation_money WHERE created_at>?),0)+?<=?
-		AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending'))
+		AND NOT EXISTS(SELECT 1 FROM automation_money WHERE state IN ('inflight','unknown','pending') AND action IN ('open','pro_open','pro5x_reserve_open'))
 		AND (SELECT COUNT(*) FROM automation_money WHERE action IN ('open','pro_open','pro5x_reserve_open') AND created_at>?)<?
 		AND EXISTS(SELECT 1 FROM automation_policy WHERE id=1 AND version=?)
 		AND EXISTS(SELECT 1 FROM pro5x_card_reserve WHERE id=1 AND state='empty')`,
