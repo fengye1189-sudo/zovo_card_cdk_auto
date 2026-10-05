@@ -404,7 +404,7 @@ func renewalCancellationConfirmed(order map[string]any) bool {
 
 func renewalStatusAwaitingUpstream(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "", "unknown", "processing":
+	case "", "unknown", "processing", "pending", "warning":
 		return true
 	default:
 		return false

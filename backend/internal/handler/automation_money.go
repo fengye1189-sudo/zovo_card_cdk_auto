@@ -74,6 +74,10 @@ const automationFundedCardTarget = 3
 const (
 	cardRenewalReminderWindow = 72 * time.Hour
 	cardPostChargeTopupDelay  = 24 * time.Hour
+	// Upstream cancellation is eventually consistent. Do not surface a card
+	// alert while a fresh pending/processing result is still within this grace
+	// period; the order-level poll will normally settle it first.
+	cardRenewalPendingGrace = 10 * time.Minute
 )
 
 type cardRenewalState struct {
@@ -162,6 +166,15 @@ func maintainCardRenewalAlerts(now int64) {
 			protected, status := cardRenewalProtected(cardID)
 			if !protected {
 				continue
+			}
+			if renewalStatusAwaitingUpstream(status) {
+				var checkedAt int64
+				if err := db.DB.QueryRow(`SELECT COALESCE(MAX(w.checked_at),0)
+					FROM automation_watch w JOIN local_cdks c ON c.id=w.local_id
+					WHERE c.card_id=? AND c.status='consumed'`, cardID).Scan(&checkedAt); err == nil &&
+					checkedAt > 0 && now-checkedAt < int64(cardRenewalPendingGrace/time.Second) {
+					continue
+				}
 			}
 			protectedCards++
 			key := fmt.Sprintf("card-renewal-state:%d", cardID)
