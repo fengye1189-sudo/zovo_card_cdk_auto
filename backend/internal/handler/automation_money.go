@@ -886,9 +886,17 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 	}
 	rows.Close()
 	scope := inventoryScope
+	// A legacy scope mismatch is intentionally kept as a safety hold, but it is
+	// not a notification-worthy event on every reconciliation cycle.  Older
+	// releases used the generic "money" alert key, so clear only that exact
+	// legacy message; unrelated money alerts remain untouched.
+	_, _ = db.DB.Exec("UPDATE automation_alerts SET resolved=1 WHERE alert_key='money' AND message LIKE '接入密钥已变更%'")
 	for _, op := range ops {
 		if op.scope != scope {
-			autoAlert("money", 0, "接入密钥已变更，旧资金操作必须使用原账号核对，未自动解除锁定。")
+			// Keep the operation locked and auditable, but do not repeatedly notify
+			// the administrator.  The mismatch is not evidence of a human key
+			// change; it only means this old operation belongs to another config
+			// scope and must be checked with its original account.
 			continue
 		}
 		target := op.card
@@ -1071,6 +1079,7 @@ func verifyMoneyOperationsForScope(inventory []cardplatform.CardChoice, p automa
 			}
 		}
 	}
+	autoResolve("money-scope-mismatch")
 }
 
 func moneyOperationHasEvidence(operationID string) bool {
