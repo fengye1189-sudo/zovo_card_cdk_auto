@@ -158,6 +158,11 @@ func autoOrderKey(id int64) string { return "order:" + strconv.FormatInt(id, 10)
 
 // Runs inside the existing server, not inside a browser. Each claim survives restarts.
 func StartAutomation(ctx context.Context) {
+	// Clear the legacy key-mismatch notification on startup.  It was emitted by
+	// older releases and can otherwise remain visible forever when there are no
+	// pending money operations to enter the reconciliation loop.  This does not
+	// touch automation_money rows or release any safety hold.
+	_, _ = db.DB.Exec("UPDATE automation_alerts SET resolved=1 WHERE alert_key='money' AND message LIKE '接入密钥已变更%'")
 	if err := MaintainCodeReserve(); err != nil {
 		autoAlert("code_reserve", 0, "备用卡密初始化失败，请检查服务配置。")
 	}
