@@ -614,8 +614,16 @@ func maintainAutomationCards(ctx context.Context) {
 				}
 				return left.nextDue > right.nextDue
 			})
-			for _, card := range inventory {
-				if protected, _ := cardRenewalProtected(card.ID); protected {
+				for _, card := range inventory {
+					// P5378OX is the dedicated Pro 5X reserve product. It must
+					// never be pulled into ordinary Plus/PULS balance maintenance;
+					// its balance is managed only by maintainPro5xReserve. Ordinary
+					// top-ups therefore continue to the configured 5556/PULS card
+					// instead of silently funding a 5378 card.
+					if strings.EqualFold(strings.TrimSpace(card.Product), pro5xReserveProduct) {
+						continue
+					}
+					if protected, _ := cardRenewalProtected(card.ID); protected {
 					continue
 				}
 				state := renewalStates[card.ID]
