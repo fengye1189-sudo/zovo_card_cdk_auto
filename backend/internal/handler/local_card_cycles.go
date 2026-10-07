@@ -48,8 +48,10 @@ func randomOrdinaryCardLimit() (int, error) {
 	return localCardUnlimitedLimit, nil
 }
 
-// localCardKind keeps only the currently claimed shared Pro 5X reserve out of
-// the ordinary pool. Historical Pro 5X cards are ordinary Plus/PULS cards.
+// localCardKind keeps the currently claimed shared Pro 5X reserve and any
+// Pro 5X card with fewer than three completed uses out of the ordinary
+// Plus/PULS pool. After the third successful 5X use, the physical card is
+// released into the ordinary pool.
 func localCardKind(cardID int64, configured bool) (string, bool, error) {
 	var reserveID int64
 	var reserveState string
@@ -70,7 +72,11 @@ func localCardKind(cardID int64, configured bool) (string, bool, error) {
 		// proof that this physical card has completed a Pro 5X use and may join
 		// the ordinary shared pool.
 		var policyCardID int64
-		if policyErr := db.DB.QueryRow("SELECT card_id FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&policyCardID); policyErr == nil && policyCardID == cardID {
+		var uses int
+		if policyErr := db.DB.QueryRow("SELECT card_id,completed_uses FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&policyCardID, &uses); policyErr == nil && policyCardID == cardID {
+			if uses < pro5xUsesBeforePlusPool {
+				return "pro_5x", true, nil
+			}
 			return "ordinary", true, nil
 		}
 		if configured {
@@ -83,6 +89,13 @@ func localCardKind(cardID int64, configured bool) (string, bool, error) {
 	}
 	if isProDedicatedPlan(plan) && status == "consumed" && (state == "submitted" || state == "completed") {
 		if isPro5xDedicatedPlan(plan) {
+			var uses int
+			if err := db.DB.QueryRow("SELECT COALESCE(completed_uses,0) FROM pro5x_card_policy WHERE card_id=?", cardID).Scan(&uses); err != nil && err != sql.ErrNoRows {
+				return "", false, err
+			}
+			if uses < pro5xUsesBeforePlusPool {
+				return "pro_5x", true, nil
+			}
 			return "ordinary", true, nil
 		}
 		return "pro", true, nil
@@ -169,7 +182,7 @@ func localPoolCards(s localSettings, now int64) ([]int64, map[int64]string, erro
 		return nil, nil, err
 	}
 	rows, err = db.DB.Query(`SELECT card_id FROM pro5x_card_policy
-	 ORDER BY updated_at,card_id`)
+	 WHERE completed_uses>=? ORDER BY updated_at,card_id`, pro5xUsesBeforePlusPool)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -336,12 +349,21 @@ func recordAuthoritativeLocalStatusWithCompletion(localID int64, state, message,
 					return err
 				}
 				// Free the one-active-dedicated-order slot so the same physical card
-				// can serve the next 5X order. The local order retains card_id as the
-				// immutable usage history.
+				// can serve the next 5X order. The reserve row keeps that physical
+				// card selected until its third successful use; only then does it
+				// enter the ordinary PULS pool.
 				if _, err = tx.Exec("UPDATE pro_dedicated_orders SET card_id=NULL WHERE local_id=? AND state='completed'", localID); err != nil {
 					return err
 				}
-				kind = "ordinary"
+				if uses < pro5xUsesBeforePlusPool {
+					kind = "pro_5x"
+					if _, err = tx.Exec(`UPDATE pro5x_card_reserve SET card_id=?,money_id='',state='ready',updated_at=?
+						WHERE id=1 AND state='empty'`, cardID, now); err != nil {
+						return err
+					}
+				} else {
+					kind = "ordinary"
+				}
 			}
 			_, err = tx.Exec(`INSERT INTO local_card_cycles(card_id,card_kind,success_limit,success_count,cycle_started_at,cooldown_until,updated_at)
 			 VALUES(?,?,?,0,?,0,?) ON CONFLICT(card_id) DO UPDATE SET

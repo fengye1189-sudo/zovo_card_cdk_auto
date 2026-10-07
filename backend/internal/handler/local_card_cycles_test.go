@@ -153,7 +153,7 @@ func TestDeclineRetirementRequiresDistinctEmails(t *testing.T) {
 	}
 }
 
-func TestHistoricalPro5xCardsEnterPlusPoolAfterEachCompletedUse(t *testing.T) {
+func TestHistoricalPro5xCardsEnterPlusPoolAfterThirdCompletedUse(t *testing.T) {
 	newLocalFixture(t)
 	now := time.Now().Unix()
 	for use := int64(1); use <= pro5xUsesBeforePlusPool; use++ {
@@ -178,8 +178,12 @@ func TestHistoricalPro5xCardsEnterPlusPoolAfterEachCompletedUse(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(ids) != 1 || ids[0] != 789 || kinds[789] != "ordinary" {
-			t.Fatal("completed Pro 5X card did not enter shared pool", use, ids, kinds)
+		if use < pro5xUsesBeforePlusPool {
+			if len(ids) != 1 || ids[0] != 789 || kinds[789] != "pro_5x" {
+				t.Fatal("Pro 5X card was released before its three-use cycle", use, ids, kinds)
+			}
+		} else if len(ids) != 1 || ids[0] != 789 || kinds[789] != "ordinary" {
+			t.Fatal("completed Pro 5X card did not enter shared pool after third use", use, ids, kinds)
 		}
 	}
 	var kind string

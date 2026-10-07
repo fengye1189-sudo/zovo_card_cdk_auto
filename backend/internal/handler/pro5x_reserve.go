@@ -140,6 +140,18 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 			return false
 		}
 	}
+	// The current dedicated card remains the only 5X card in rotation while
+	// its order is still being processed. Do not prepare a replacement in the
+	// short gap between claiming the card and recording the order completion;
+	// completion will put this same card back into the reserve when it has
+	// fewer than three successful uses.
+	var activeDedicated int
+	if db.DB.QueryRow(`SELECT EXISTS(
+		SELECT 1 FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
+		WHERE p.card_id>0 AND p.state IN ('funding','submitted')
+		AND c.plan IN ('pro_5x','pro_5x_cl','pro5x'))`).Scan(&activeDedicated) == nil && activeDedicated != 0 {
+		return false
+	}
 	// A reviewed card is isolated by its durable money/lifecycle evidence, but
 	// it must not block every other healthy card from becoming the next reserve.
 	// Keep its id out of this selection pass, then hand the reserve slot to a
@@ -166,6 +178,7 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	reuseID := int64(0)
 	lowestBalance := int64(1<<62 - 1)
 	selectedReady := false
+	selectedPreferred := false
 	var selected cardplatform.CardChoice
 	for _, candidate := range inventory {
 		if candidate.ID <= 0 || candidate.ID == excludedReviewID || candidate.Status != "ACTIVE" {
@@ -192,14 +205,26 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 		if held, heldErr := localCardMoneyHeld(candidate.ID); heldErr != nil || held {
 			continue
 		}
+		// A Pro 5X card that has not completed its three-use cycle must be
+		// reused, even when another whitelisted card currently has a higher
+		// balance. This is the dedicated-card rule; it is released to PULS only
+		// after the third successful order.
+		preferred := false
+		var completedUses int
+		if err := db.DB.QueryRow("SELECT COALESCE(completed_uses,0) FROM pro5x_card_policy WHERE card_id=?", candidate.ID).Scan(&completedUses); err == nil && completedUses < pro5xUsesBeforePlusPool {
+			preferred = true
+		}
 		var busy int
 		if db.DB.QueryRow(`SELECT EXISTS(SELECT 1 FROM local_cdks WHERE card_id=? AND status IN ('reserved','review'))`, candidate.ID).Scan(&busy) != nil || busy != 0 {
 			continue
 		}
 		candidateReady := balance >= pro5xInitialMinor
-		if reuseID == 0 || (candidateReady && !selectedReady) || (candidateReady == selectedReady && balance < lowestBalance) {
+		if reuseID == 0 || (preferred && !selectedPreferred) ||
+			(preferred == selectedPreferred && candidateReady && !selectedReady) ||
+			(preferred == selectedPreferred && candidateReady == selectedReady && balance < lowestBalance) {
 			lowestBalance = balance
 			selectedReady = candidateReady
+			selectedPreferred = preferred
 			reuseID = candidate.ID
 			selected = candidate
 		}
