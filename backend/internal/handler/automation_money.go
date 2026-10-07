@@ -551,40 +551,9 @@ func maintainAutomationCards(ctx context.Context) {
 	for _, id := range ids {
 		selected[id] = true
 	}
-	// 5X cards remain dedicated and are always excluded from the ordinary Plus
-	// funding pool. The reserve card is also excluded while it is claimed.
-	rows, selectErr := db.DB.Query(`SELECT p.card_id
-		FROM pro_dedicated_orders p JOIN local_cdks c ON c.id=p.local_id
-		WHERE p.card_id>0 AND p.state='completed' AND c.plan IN ('pro_5x','pro_5x_cl') AND c.status='consumed'`)
-	if selectErr != nil {
-		return
-	}
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) == nil {
-			selected[id] = true
-		}
-	}
-	if rows.Err() != nil {
-		rows.Close()
-		return
-	}
-	rows.Close()
-	rows, selectErr = db.DB.Query("SELECT card_id FROM pro5x_card_policy")
-	if selectErr != nil {
-		return
-	}
-	for rows.Next() {
-		var id int64
-		if rows.Scan(&id) == nil {
-			selected[id] = true
-		}
-	}
-	if rows.Err() != nil {
-		rows.Close()
-		return
-	}
-	rows.Close()
+	// Only cards explicitly selected in the administrator's whitelist may be
+	// funded. Historical Pro cards and reserve-policy rows are not implicit
+	// authorization to recharge a card.
 	var candidates []cardplatform.DirectCandidate
 	e = retryAutomationRead(ctx, func(readCtx context.Context) error {
 		var err error

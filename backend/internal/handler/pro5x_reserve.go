@@ -130,6 +130,10 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	if !settings.Enabled || !settings.ProDedicatedEnabled || !p.Sync || p.Paused || !p.Open || p.First == "" || p.Last == "" || p.DailyBudget <= 0 || p.DailyOpen <= 0 {
 		return false
 	}
+	whitelist := make(map[int64]bool)
+	for _, id := range localCardIDs(settings) {
+		whitelist[id] = true
+	}
 	reserve, err := loadPro5xReserve()
 	if err != nil || reserve.State != "empty" {
 		if err != nil || reserve.State != "review" {
@@ -165,6 +169,9 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	var selected cardplatform.CardChoice
 	for _, candidate := range inventory {
 		if candidate.ID <= 0 || candidate.ID == excludedReviewID || candidate.Status != "ACTIVE" {
+			continue
+		}
+		if !whitelist[candidate.ID] {
 			continue
 		}
 		balance, ok := usdMinor(candidate.Balance)
