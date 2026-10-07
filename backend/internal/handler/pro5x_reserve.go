@@ -115,14 +115,14 @@ func reconcilePro5xReserve(inventory []cardplatform.CardChoice) {
 		if !ok || balance < pro5xInitialMinor {
 			_, _ = db.DB.Exec(`UPDATE pro5x_card_reserve SET state='review',updated_at=?
 				WHERE id=1 AND state='ready' AND card_id=?`, time.Now().Unix(), r.CardID)
-			autoAlert("pro5x_reserve", 0, fmt.Sprintf("Pro 5X 预备专卡 #%d 当前余额不足 $100 或状态异常，请核对后再启用。", r.CardID))
+			autoAlert("pro5x_reserve", 0, fmt.Sprintf("Pro 5X 预备专卡 #%d 当前余额不足 $95 或状态异常，请核对后再启用。", r.CardID))
 			return
 		}
 		autoResolve("pro5x_reserve")
 	}
 }
 
-// maintainPro5xReserve keeps one verified USD 100 card available. It returns
+// maintainPro5xReserve keeps one verified USD 95 card available. It returns
 // true when it initiated an upstream opening, so the caller performs no other
 // money operation in the same automation cycle.
 func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, inventory []cardplatform.CardChoice, p automationPolicy, policyVersion int64, scope string, productMap map[string]cardplatform.AutomationProduct, now int64) bool {
