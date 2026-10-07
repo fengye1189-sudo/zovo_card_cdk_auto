@@ -230,6 +230,14 @@ func localFairShuffleCards(ids []int64) error {
 	return nil
 }
 func localAvailableCards(c *gin.Context, cli *cardplatform.Client, s localSettings, plans ...string) ([]int64, error) {
+	return localAvailableCardsAttempt(c, cli, s, false, plans...)
+}
+
+// localAvailableCardsAttempt gives the automation worker a brief chance to
+// finish a just-completed top-up/enrollment before a customer preflight fails.
+// It never opens or funds a card itself; it only repeats the read-only card
+// eligibility check once when the first snapshot is empty.
+func localAvailableCardsAttempt(c *gin.Context, cli *cardplatform.Client, s localSettings, retried bool, plans ...string) ([]int64, error) {
 	plan := "plus"
 	if len(plans) > 0 {
 		plan = upstreamLocalPlan(plans[0])
@@ -307,6 +315,16 @@ func localAvailableCards(c *gin.Context, cli *cardplatform.Client, s localSettin
 	}
 	if e := localFairShuffleCards(available); e != nil {
 		return nil, e
+	}
+	if len(available) == 0 && !retried {
+		timer := time.NewTimer(900 * time.Millisecond)
+		select {
+		case <-c.Request.Context().Done():
+			timer.Stop()
+			return nil, c.Request.Context().Err()
+		case <-timer.C:
+		}
+		return localAvailableCardsAttempt(c, cli, s, true, plans...)
 	}
 	return available, nil
 }
