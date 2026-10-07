@@ -487,11 +487,21 @@ func maintainAutomationCards(ctx context.Context) {
 	// Unresolved opening operations only block another opening. Funding a
 	// different healthy card continues; the reservation SQL below retains the
 	// opening-specific guard and the card-specific guard for top-ups.
-	products, e := cli.AutomationProducts(ctx)
-	if e != nil {
-		autoAlert("money", 0, "无法核查产品费率，未进行资金操作。")
+	var products []cardplatform.AutomationProduct
+	productErr := retryAutomationRead(ctx, func(readCtx context.Context) error {
+		var err error
+		products, err = cli.AutomationProducts(readCtx)
+		return err
+	})
+	if productErr != nil {
+		// Product fees are a read-only prerequisite. A transient upstream
+		// timeout must not poison the shared money alert forever, but we must
+		// still fail closed for this cycle and never submit a funding action.
+		autoAlert("money_products", 0, "Zovo 产品费率"+automationReadReason(productErr)+"，本轮未进行资金操作；查询恢复后自动解除。")
 		return
 	}
+	autoResolve("money_products")
+	resolveLegacyMoneyAlert("无法核查产品费率，未进行资金操作。")
 	productMap := map[string]cardplatform.AutomationProduct{}
 	for _, product := range products {
 		if _, exists := productMap[product.Code]; exists {

@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -233,7 +234,12 @@ func localAvailableCards(c *gin.Context, cli *cardplatform.Client, s localSettin
 	if len(plans) > 0 {
 		plan = upstreamLocalPlan(plans[0])
 	}
-	candidates, e := cli.DirectCandidatesForPlan(c.Request.Context(), plan)
+	var candidates []cardplatform.DirectCandidate
+	e := retryAutomationRead(c.Request.Context(), func(readCtx context.Context) error {
+		var err error
+		candidates, err = cli.DirectCandidatesForPlan(readCtx, plan)
+		return err
+	})
 	if e != nil {
 		return nil, e
 	}
@@ -615,8 +621,13 @@ func LocalCDKPreflight(c *gin.Context) {
 		localError(c, 409, "商品地区配置不一致，尚未提交充值")
 		return
 	}
-	version, fee, e := cli.DirectPricing(c.Request.Context(), upstreamPlan)
-	if e != nil {
+	var version, fee int64
+	pricingErr := retryAutomationRead(c.Request.Context(), func(readCtx context.Context) error {
+		var err error
+		version, fee, err = cli.DirectPricing(readCtx, upstreamPlan)
+		return err
+	})
+	if pricingErr != nil {
 		localError(c, 502, "暂时无法获取充值报价，请联系商家检查通道")
 		return
 	}
