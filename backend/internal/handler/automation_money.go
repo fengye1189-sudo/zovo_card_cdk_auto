@@ -747,29 +747,18 @@ func maintainAutomationCards(ctx context.Context) {
 			}
 		}
 		var product cardplatform.AutomationProduct
-		var ok bool
-		if p.AutoProduct {
-			// The upstream product order is authoritative: it reflects the
-			// card-head priority configured in Zovo. Local success-rate ranking
-			// remains available for reporting, but must not override that choice.
-			product, selectionMode, e = selectUpstreamAutomationProduct(products, p.InitAmount)
-			if e != nil {
-				autoAlert("money", 0, "当前没有符合开卡金额和商户限制的可用卡头，未开卡。")
-				return
-			}
-			openProduct = product.Code
-			ok = true
-		} else {
-			product, ok = productMap[p.Product]
-			if !ok {
-				autoAlert("money", 0, "指定自动开卡产品未在上游产品列表中返回，未开卡；请核对产品码。")
-				return
-			}
-			selectionMode = "fixed"
+		// Zovo's product order is the sole source of truth for new cards. Do
+		// not honor the legacy fixed product-code field: it can silently keep
+		// opening an old BIN after the upstream priority has changed.
+		product, selectionMode, e = selectUpstreamAutomationProduct(products, p.InitAmount)
+		if e != nil {
+			autoAlert("money", 0, "当前没有符合开卡金额和商户限制的可用卡头，未开卡。")
+			return
 		}
+		openProduct = product.Code
 		openBIN = product.Bin
 		amount = p.InitAmount
-		cost, ok = productCost(product, amount, true)
+		cost, ok := productCost(product, amount, true)
 		if !ok || amount > p.CardCeiling {
 			autoAlert("money", 0, "指定开卡产品的金额或商户限制不符合规则，未开卡。")
 			return
