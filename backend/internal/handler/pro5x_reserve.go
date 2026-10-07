@@ -4,13 +4,27 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-const pro5xReserveProduct = "P5378OX"
+// 5378/ P5378OX has been retired by the owner. Pro5X reserve preparation now
+// uses the approved 5556-family upstream product instead.
+const pro5xReserveProduct = "USMAB01"
+
+func isRetired5378Card(card cardplatform.CardChoice) bool {
+	if strings.EqualFold(strings.TrimSpace(card.Product), "P5378OX") {
+		return true
+	}
+	var bin string
+	if err := db.DB.QueryRow("SELECT COALESCE(bin,'') FROM automation_card_lifecycle WHERE card_id=?", card.ID).Scan(&bin); err == nil {
+		return strings.HasPrefix(strings.TrimSpace(bin), "537872")
+	}
+	return false
+}
 
 type pro5xReserve struct {
 	CardID    int64
@@ -140,6 +154,20 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 			return false
 		}
 	}
+	// A previously prepared 5378 reserve is retired as well. Do not keep
+	// funding or reusing it after the owner removes that card head.
+	if reserve.State == "ready" && reserve.CardID > 0 {
+		for _, card := range inventory {
+			if card.ID == reserve.CardID && isRetired5378Card(card) {
+				if _, clearErr := db.DB.Exec(`UPDATE pro5x_card_reserve SET card_id=0,money_id='',state='empty',updated_at=? WHERE id=1 AND state='ready' AND card_id=?`, now, reserve.CardID); clearErr != nil {
+					return false
+				}
+				reserve.State = "empty"
+				reserve.CardID = 0
+				break
+			}
+		}
+	}
 	// The current dedicated card remains the only 5X card in rotation while
 	// its order is still being processed. Do not prepare a replacement in the
 	// short gap between claiming the card and recording the order completion;
@@ -182,6 +210,9 @@ func maintainPro5xReserve(ctx context.Context, cli *cardplatform.Client, invento
 	var selected cardplatform.CardChoice
 	for _, candidate := range inventory {
 		if candidate.ID <= 0 || candidate.ID == excludedReviewID || candidate.Status != "ACTIVE" {
+			continue
+		}
+		if isRetired5378Card(candidate) {
 			continue
 		}
 		if !whitelist[candidate.ID] {
