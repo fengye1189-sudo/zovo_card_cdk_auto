@@ -727,7 +727,7 @@ func maintainAutomationCards(ctx context.Context) {
 		openProduct = product.Code
 		openBIN = product.Bin
 		amount = p.InitAmount
-		cost, ok := productCost(product, amount, true)
+		cost, ok = productCost(product, amount, true)
 		if !ok || amount > p.CardCeiling {
 			autoAlert("money", 0, "指定开卡产品的金额或商户限制不符合规则，未开卡。")
 			return
